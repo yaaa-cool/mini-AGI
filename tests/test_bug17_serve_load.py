@@ -28,3 +28,23 @@ def test_serve_starts_on_never_saved_dir(tmp_path, monkeypatch):
     assert ran
     # loaded through the paging path, so the expert panel has slots to show
     assert hasattr(serve.STATE["model"].pool, "slots")
+
+
+def test_saved_in_memory_dir_keeps_its_load_path(tmp_path):
+    """A `train.py stream` save has experts/ too, but 512-wide routers."""
+    from dataclasses import asdict
+
+    from minagi import store
+    from minagi.recur import RecurCoder, RecurConfig, _load_dir
+    cfg = RecurConfig(vocab_size=265, d_model=8, n_head=1, d_ff=16,
+                      n_prelude=1, n_recur=1, n_coda=0, max_steps=1,
+                      block=64, use_pool=True, pool_experts=3, pool_d_ff=8,
+                      pool_top_k=1, pool_max=16)     # wider than the pool
+    src = str(tmp_path / "weights")
+    store.save(RecurCoder(cfg), src, step=5, val=None, opt=None,
+               cfg=asdict(cfg))
+    assert os.path.isdir(os.path.join(src, store.EXPERTS))
+    m, meta = _load_dir(src, "cpu")     # build_paged raised on router size
+    assert meta["step"] == 5
+    assert not hasattr(m.pool, "slots")
+    assert m.pool.n_experts() == 3

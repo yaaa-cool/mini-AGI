@@ -495,9 +495,12 @@ def _load_dir(path, device, paged=None, read_only=False):
         man = json.load(f)
     if paged is None:
         # The flag is written only by a paged save, so a directory made by
-        # create() and never saved lacks it while holding the same layout.
-        paged = bool(man.get("paged")) or os.path.isdir(
-            os.path.join(path, weights_store.EXPERTS))
+        # create() and never saved (step -1) lacks it while holding the same
+        # layout. Every save writes experts/, so that alone is no sign: an
+        # in-memory save's routers are pool_max wide and only load here.
+        paged = bool(man.get("paged")) or (
+            man.get("step") == -1
+            and os.path.isdir(os.path.join(path, weights_store.EXPERTS)))
     if paged:
         # build_paged lives in train.py; a caller in another directory (the
         # film's captures run from video/) needs the repo root on the path
