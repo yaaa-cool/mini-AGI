@@ -131,9 +131,18 @@ CUDA_VISIBLE_DEVICES="" .venv/bin/python -m pytest -q tests/
 
 ## SYNC
 
-Local `main` is our integration branch. `upstream/main` mirrors
+Local `main` is our integration branch and tracks `origin/main`, our fork at
+github.com/yaaa-cool/mini-AGI. `upstream/main` mirrors
 github.com/volotat/mini-AGI: never commit to it, and never create a local
 branch that shadows it. Our upstream fixes are commits titled `fix #N: ...`.
+
+The cycle is: fetch upstream, merge, test, push to origin.
+
+1. `scripts/sync-upstream.sh` (or `git fetch upstream && git merge upstream/main`).
+2. Run the tests on the rig CPU: `CUDA_VISIBLE_DEVICES="" .venv/bin/python -m pytest -q tests`.
+3. `git push origin main`, a plain fast-forward push. Never `--force`, and push
+   no other branches or tags except a `wave-N-done` tag. No PRs to volotat
+   unless the owner decides to contribute a patch.
 
 - **Sync:** `scripts/sync-upstream.sh` (refuses unless on a clean `main`, and
   never pushes), or by hand: `git fetch upstream && git merge upstream/main`.
