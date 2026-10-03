@@ -56,7 +56,7 @@ def create(out, seed=0, verbose=True, force=False, **over):
     n_head     = int(pick("n_head", "model.n_head", default=8))
     block      = int(pick("block", "model.context_end", "model.context",
                           default=16384))
-    max_steps  = int(pick("max_steps", "model.max_steps", default=6))
+    max_steps  = int(pick("max_steps", "model.max_steps", default=24))
     top_k      = int(pick("top_k", "pool.top_k", default=8))
 
     if os.path.exists(out):
@@ -67,8 +67,8 @@ def create(out, seed=0, verbose=True, force=False, **over):
     cfg = RecurConfig(vocab_size=265, d_model=d_model, n_head=n_head,
                       d_ff=trunk_d_ff,
                       n_prelude=get(c, "model.n_prelude", 2),
-                      n_recur=get(c, "model.n_recur", 3),
-                      n_coda=get(c, "model.n_coda", 1),
+                      n_recur=get(c, "model.n_recur", 1),
+                      n_coda=get(c, "model.n_coda", 0),
                       max_steps=max_steps, block=block, use_pool=True,
                       pool_experts=experts, pool_d_ff=d_ff,
                       pool_depth=depth, pool_top_k=top_k,
