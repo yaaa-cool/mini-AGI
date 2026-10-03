@@ -117,6 +117,53 @@ class PersonaLaneTest(unittest.TestCase):
             self.assertEqual(_files(os.path.join(out, "train", "persona")),
                              [os.path.join("0000", "part-000000.txt")])
 
+    def test_force_refuses_a_source_inside_the_lane(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = os.path.join(tmp, "data")
+            src = os.path.join(out, "train", "persona", "0000")
+            os.makedirs(src)
+            with open(os.path.join(src, "part-000000.txt"), "w") as f:
+                f.write("<user>\nhi\n</user>\n<bot>\nok\n</bot>\n")
+            for where in (src, os.path.join(out, "train", "persona")):
+                rc, _, err = _run("--src", where, "--out", out, "--force")
+                self.assertEqual(rc, 1)
+                self.assertIn("inside", err)
+            # the source is still there
+            self.assertEqual(_files(os.path.join(out, "train", "persona")),
+                             [os.path.join("0000", "part-000000.txt")])
+
+    def test_jsonl_drops_roles_the_exporter_drops(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src = os.path.join(tmp, "sft.jsonl")
+            with open(src, "w") as f:
+                f.write(json.dumps({"messages": [
+                    {"role": "user", "content": "What time is it?"},
+                    {"role": "assistant", "content": "Let me look."},
+                    {"role": "tool", "content": "12:00 tool output"},
+                    {"role": "assistant", "content": "Noon."}]}) + "\n")
+            out = os.path.join(tmp, "data")
+            rc, _, _ = _run("--src", src, "--out", out)
+            self.assertEqual(rc, 0)
+            train = os.path.join(out, "train", "persona")
+            with open(os.path.join(train, "0000", "part-000000.txt")) as f:
+                text = f.read()
+            self.assertNotIn("tool output", text)
+            self.assertEqual(text.count("<bot>"), 2)
+
+    def test_hold_cap_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src = os.path.join(tmp, "sft.jsonl")
+            with open(src, "w") as f:
+                for _ in range(20):
+                    f.write(json.dumps(DIALOG) + "\n")
+            out = os.path.join(tmp, "data")
+            rc, _, err = _run("--src", src, "--out", out, "--group", "50",
+                              "--hold", "5")
+            self.assertEqual(rc, 0)
+            self.assertIn("--hold 5 capped at 2", err)
+            self.assertEqual(len(_files(os.path.join(out, "val", "persona"))),
+                             2)
+
     def test_source_without_dialogs_fails(self):
         with tempfile.TemporaryDirectory() as tmp:
             src = os.path.join(tmp, "empty.jsonl")

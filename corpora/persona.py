@@ -65,8 +65,11 @@ def _from_jsonl(src, group):
             if not line.strip():
                 continue
             row = json.loads(line)
+            # user and assistant only, as export_miniagi.py keeps them:
+            # as_chat would make a tool or system turn a <bot> turn
             msgs = [dict(m, content=_escape(m.get("content") or ""))
-                    for m in row.get("messages") or [] if isinstance(m, dict)]
+                    for m in row.get("messages") or [] if isinstance(m, dict)
+                    and m.get("role") in ("user", "assistant")]
             t = as_chat({"messages": msgs})
             if t is None:
                 skipped += 1
@@ -122,6 +125,16 @@ def main():
         ap.error("--hold and --src-val both name the held-out set; give one")
     train_dir = os.path.join(a.out, "train", "persona")
     val_dir = os.path.join(a.out, "val", "persona")
+    if a.force:
+        # --force empties the lanes before the source is read
+        for flag, s in (("--src", a.src), ("--src-val", a.src_val)):
+            for d in (train_dir, val_dir):
+                if s and os.path.commonpath(
+                        [os.path.realpath(s), os.path.realpath(d)]) \
+                        == os.path.realpath(d):
+                    print(f"{flag} {s} is inside {d}, which --force would "
+                          f"delete - export it somewhere else", file=sys.stderr)
+                    return 1
     for d in (train_dir, val_dir):
         if os.path.isdir(d) and os.listdir(d):
             if not a.force:
@@ -137,6 +150,9 @@ def main():
         val = _load(a.src_val, a.group)
     else:
         hold = min(a.hold, len(train) // 10) if a.hold else 0
+        if hold < a.hold:
+            print(f"  --hold {a.hold} capped at {hold}, a tenth of the "
+                  f"{len(train)} files", file=sys.stderr)
         val, train = train[:hold], train[hold:]
     if not train or not any("<bot>" in t for t in train):
         print(f"no chat text in {a.src}", file=sys.stderr)
