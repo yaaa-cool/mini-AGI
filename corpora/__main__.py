@@ -5,6 +5,7 @@
     fetch        any Hugging Face dataset, by name
     reasoning    OpenThoughts deliberation traces
     pg19         the PG19 test split, for a comparable bits-per-byte
+    persona      a persona dialog export, as its own lane; not in `all`
 
     code         Python from the local filesystem   -> data_char
     arithmetic   synthesised, with scratchpads      -> data_math_char
@@ -28,6 +29,7 @@ BUILDERS = {"code": "corpora.code",
             "fetch": "corpora.fetch",
             "reasoning": "corpora.reasoning",
             "pg19": "corpora.pg19",
+            "persona": "corpora.persona",
             "all": "corpora.build"}
 
 
