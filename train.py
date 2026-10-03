@@ -658,6 +658,9 @@ def cmd_read(args):
         print()
     model, cfg, pool, man = build_paged(wdir, device, args.resident,
                                         args.ram_capacity, args.context)
+    if not args.save:               # a dry read writes experts only to a temp overlay
+        from minagi.dryread import overlay
+        overlay(pool, wdir)
     # the best held-out this run has seen, for the optional notifier below.
     # Reads the manifest, so it cannot move above build_paged.
     best_val = float(man.get("val") or float("inf"))
