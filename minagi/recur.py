@@ -494,7 +494,10 @@ def _load_dir(path, device, paged=None, read_only=False):
     with open(os.path.join(path, "manifest.json")) as f:
         man = json.load(f)
     if paged is None:
-        paged = bool(man.get("paged"))
+        # The flag is written only by a paged save, so a directory made by
+        # create() and never saved lacks it while holding the same layout.
+        paged = bool(man.get("paged")) or os.path.isdir(
+            os.path.join(path, weights_store.EXPERTS))
     if paged:
         # build_paged lives in train.py; a caller in another directory (the
         # film's captures run from video/) needs the repo root on the path
