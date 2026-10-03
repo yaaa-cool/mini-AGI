@@ -317,6 +317,7 @@ class FileReader:
         That factor is the difference between an evaluation that runs between
         samples and one that costs more than the training it is measuring.
         """
+        n = min(n, self.context)      # a chunk past the rotary tables: #18
         if self.caches is None or self.seen + n > self.context:
             self.caches = self.model.empty_caches()
             self.seen = 0
