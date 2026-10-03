@@ -49,11 +49,11 @@ echo >&2
 echo "sync-upstream: merge stopped on conflicts (left in progress):" >&2
 while IFS= read -r f; do
     echo "  $f" >&2
-    ours=$(git log --oneline --grep '^fix #' upstream/main..main -- "$f")
+    ours=$(git log --oneline --grep '^fix ' upstream/main..main -- "$f")
     if [ -n "$ours" ]; then
         echo "$ours" | sed 's/^/      our patch: /' >&2
     else
-        echo "      (no 'fix #N' commit of ours touches it)" >&2
+        echo "      (no 'fix ...' commit of ours touches it)" >&2
     fi
 done <<< "$conflicted"
 echo >&2

@@ -6,7 +6,7 @@ Every command marked **[GPU - owner release]** loads the model on the GPU and
 needs that release for the specific run. Corpus builds and tests are CPU-only.
 Never touch other GPU processes on the box.
 
-Experiment config: `config.small.yaml` (a companion change adds it); code reads
+Experiment config: `config.small.yaml` at the repo root; code reads
 `config.yaml` by default, so select it as its header describes.
 
 Session setup: `ssh train@10.0.1.19`, `cd ~/train/mini-AGI && . .venv/bin/activate`,
@@ -87,8 +87,8 @@ done
   re-read more often than persona itself.
 
 ```bash
-cp -a $W/weights $W/weights-persona   # a COPY: paging can write expert files
-                                      # even on a dry read (upstream issue #6)
+cp -a $W/weights $W/weights-persona   # a COPY, belt-and-braces: a dry read
+                                      # no longer writes experts (issue #6)
 # [GPU - owner release] dry read: held-out per subject before and after;
 # rerun with --save to keep it
 python3 train.py read data/replay --weights-dir $W/weights-persona \
@@ -147,7 +147,7 @@ The cycle is: fetch upstream, merge, test, push to origin.
 - **Sync:** `scripts/sync-upstream.sh` (refuses unless on a clean `main`, and
   never pushes), or by hand: `git fetch upstream && git merge upstream/main`.
   Always a merge, never a rebase, because `main` only moves forward.
-- **Our patches:** `git log --oneline upstream/main..main --grep '^fix #'`.
+- **Our patches:** `git log --oneline upstream/main..main --grep '^fix '`.
 - **Is a patch redundant?** Any one of these: the issue is closed upstream;
   upstream has touched the same code (`git log upstream/main -- <files>`); or
   our regression test passes on a clean `upstream/main` checkout without the

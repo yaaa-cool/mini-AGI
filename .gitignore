@@ -4,6 +4,8 @@ data_*/
 # The weights directory
 weights/*
 !weights/manifest.json
+weights-small/
+.minagi-dry-*/
 
 # Run artefacts: logs, checkpoints, plots
 runs/*

@@ -2,8 +2,8 @@
 # on an RTX 3060 12 GB.
 #
 # Everything config.yaml sets is set here too, explicitly: minagi/create.py
-# falls back to its own defaults for a missing key (n_recur 3, n_coda 1,
-# max_steps 6, block 16,384), which would quietly build a different model.
+# falls back to its own defaults for a missing key, and a default that drifts
+# from config.yaml would quietly build a different model.
 # Every key that differs from config.yaml carries a "SMALL:" comment saying
 # why; everything else is config.yaml's value and comment unchanged.
 #
