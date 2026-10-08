@@ -30,9 +30,12 @@ class GradSNR:
         self.m = None
         self.sq = 0.0
         self.n = 0
+        self._sums = []     # squared norms still on the device, oldest first
 
     @torch.no_grad()
-    def observe(self, params):
+    def observe(self, params, report=True):
+        # `report=False` returns nothing and leaves the squared norm on the
+        # device until the ratio is asked for, so the step does not wait.
         # A parameter with no gradient contributed a zero gradient this step,
         # so it is counted as zeros rather than left out. Leaving it out made
         # the flattened vector change length whenever a parameter sat a step
@@ -46,13 +49,25 @@ class GradSNR:
                           for p in params])
         self.m = flat.clone() if self.m is None else \
             self.m.mul_(self.beta).add_(flat, alpha=1 - self.beta)
-        s = float((flat * flat).sum())
-        self.sq = s if self.n == 0 else self.beta * self.sq + (1 - self.beta) * s
+        self._sums.append((flat * flat).sum())
         self.n += 1
-        return self.ratio()
+        if len(self._sums) >= 64:
+            self._fold()
+        return self.ratio() if report else None
+
+    def _fold(self):
+        """Read the pending squared norms back into sq, in the order taken."""
+        if not self._sums:
+            return
+        first = self.n - len(self._sums) == 0
+        for s in torch.stack(self._sums).tolist():
+            self.sq = s if first else self.beta * self.sq + (1 - self.beta) * s
+            first = False
+        self._sums.clear()
 
     def ratio(self):
         """0 = pure noise, 1 = every step pointing the same way."""
+        self._fold()
         if self.m is None or self.sq <= 0 or self.n < 8:
             return None
         # No bias correction: both averages start AT the first reading, not at

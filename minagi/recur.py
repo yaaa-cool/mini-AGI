@@ -61,6 +61,7 @@ class RecurCoder(nn.Module):
     def __init__(self, cfg):
         super().__init__()
         self.cfg = cfg
+        self._priors = {}         # the halting prior per depth, on the device
         self.tok_emb = nn.Embedding(cfg.vocab_size, cfg.d_model)
         self.prelude = nn.ModuleList([Block(cfg) for _ in range(cfg.n_prelude)])
         self.recur = nn.ModuleList([Block(cfg) for _ in range(cfg.n_recur)])
@@ -201,6 +202,46 @@ class RecurCoder(nn.Module):
         n = int(torch.poisson(torch.tensor(float(c.train_steps_mean))).item()) + 1
         return max(c.min_steps, min(c.max_steps, n))
 
+    @property
+    def last_steps(self):
+        """The last training forward's expected depth. Kept on the device by
+        the forward and read back only here, so a step does not wait for it."""
+        return float(self._last_steps)
+
+    # The readout through torch.compile (compile_static); None runs it eagerly
+    compiled_readout = None
+
+    def _readout(self, y, targets):
+        """One row's logits, halting probability and - with targets - its
+        per-character loss."""
+        yf = self.ln_f(y)
+        logits_n = self.head(yf)
+        lam = torch.sigmoid(self.halt(yf).float())
+        if targets is None:
+            return logits_n, lam, None
+        ce = F.cross_entropy(
+            logits_n.reshape(-1, logits_n.size(-1)).float(),
+            targets.reshape(-1), reduction="none").view(targets.shape)
+        return logits_n, lam, ce
+
+    def compile_static(self, **kw):
+        """
+        torch.compile the parts of a training forward whose work does not
+        depend on the text: every block's attention sub-layer and the readout
+        of every row. Both run on the whole window at a shape that changes
+        only as the window grows, so they compile with dynamic shapes, and
+        writing and held-out (which carry caches) stay eager. The halting loop,
+        the expert pool and admission stay eager too: they read counts back
+        and decide on the host what runs next, and each expert's matmuls are
+        a different size every row.
+        """
+        from . import model as _model
+        # probed once and cached: a constant to the compiler, not code to trace
+        torch.compiler.assume_constant_result(_model.fused_attention_available)
+        for blk in list(self.prelude) + list(self.recur) + list(self.coda):
+            blk.compiled = torch.compile(blk._attend, **kw)
+        self.compiled_readout = torch.compile(self._readout, **kw)
+
     def forward(self, idx, targets=None, caches=None, pos_offset=0,
                 collect=False):
         cfg = self.cfg
@@ -299,7 +340,8 @@ class RecurCoder(nn.Module):
             else:
                 hn = self.adapter(torch.cat([h, x], dim=-1))
                 for blk in self.recur:
-                    hn = blk(hn, cos, sin, slot(ci), active=active)
+                    hn = blk(hn, cos, sin, slot(ci), active=active,
+                             n_active=live if active is not None else None)
                     ci += 1
                 h = (hn if active is None
                      else torch.where(active.unsqueeze(-1), hn, h))
@@ -307,10 +349,11 @@ class RecurCoder(nn.Module):
             for blk in self.coda:
                 y = blk(y, cos, sin, slot(ci))
                 ci += 1
-            yf = self.ln_f(y)
-            logits_n = self.head(yf)
-
-            lam = torch.sigmoid(self.halt(yf).float())          # [B,T,1]
+            readout = (self.compiled_readout
+                       if (self.compiled_readout is not None
+                           and targets is not None and torch.is_grad_enabled())
+                       else self._readout)
+            logits_n, lam, ce = readout(y, targets)              # lam [B,T,1]
             if n == n_steps - 1:
                 lam = torch.ones_like(lam)                      # must stop
             elif n < cfg.min_steps - 1:
@@ -319,9 +362,6 @@ class RecurCoder(nn.Module):
             cum = cum * (1.0 - lam)
 
             if targets is not None:
-                ce = F.cross_entropy(
-                    logits_n.reshape(-1, logits_n.size(-1)).float(),
-                    targets.reshape(-1), reduction="none").view(B, T)
                 loss_terms.append(p_n.squeeze(-1) * ce)
                 p_terms.append(p_n.squeeze(-1))
                 # the halting-weighted mixture of every depth's logits, so
@@ -365,15 +405,20 @@ class RecurCoder(nn.Module):
         P = torch.stack(p_terms, 0)                              # [N,B,T]
         L = torch.stack(loss_terms, 0)
         loss = L.sum(0).mean()
-        prior = torch.tensor(
-            [cfg.halt_prior * (1 - cfg.halt_prior) ** n
-             for n in range(len(p_terms))], device=x.device)
+        # the prior is a copy from a list, which on a GPU the host waits for,
+        # so each depth's is built once and kept
+        key = (len(p_terms), cfg.halt_prior, x.device)
+        prior = self._priors.get(key)
+        if prior is None:
+            prior = self._priors[key] = torch.tensor(
+                [cfg.halt_prior * (1 - cfg.halt_prior) ** n
+                 for n in range(len(p_terms))], device=x.device)
         prior = (prior / prior.sum()).view(-1, 1, 1)
         kl = (P.clamp_min(1e-8) * (P.clamp_min(1e-8).log() - prior.log())).sum(0)
         loss = loss + cfg.ponder_beta * kl.mean()
         steps = (P * torch.arange(1, len(p_terms) + 1, device=x.device)
                  .view(-1, 1, 1)).sum(0)
-        self.last_steps = float(steps.mean().detach())
+        self._last_steps = steps.mean().detach()      # read back by last_steps
         # logits are the halting-weighted mixture, so top-1 accuracy measured
         # downstream reflects what the model would actually have emitted
         return halted_logits, loss

@@ -848,6 +848,13 @@ def cmd_read(args):
     from minagi.tokenizer import ByteTokenizer
     tok = ByteTokenizer()
     model.train()
+    if args.compile:
+        # dynamic: the window grows a character at a time, and a compile per
+        # length would never stop. Not reduce-overhead - CUDA graphs need one
+        # shape and no read-backs, and every row reads its routing back.
+        model.compile_static(dynamic=True)
+        print("  attention and readout compiled (torch.compile, dynamic "
+              "shapes); the first steps include the compile", flush=True)
     t0 = time.time()
     last_sample = time.time()
     # Steps and characters are cumulative over the model's whole life, not
@@ -920,6 +927,7 @@ def cmd_read(args):
         more. Near zero means the far end of the window is being carried for
         nothing.
         """
+        settle()
         n_buckets = max(2, ctx_now // args.chunk)
         early = [l for p, ls in by_pos.items() if p < n_buckets * 0.5
                  for l in ls]
@@ -1016,6 +1024,7 @@ def cmd_read(args):
         # There is no reading position to record any more: windows are drawn
         # at random, so what carries forward is how much has been read, not
         # where the reader had got to.
+        settle()                                # the information count
         weights_store.save(model, wdir, step=step, val=val, opt=opt,
                            cfg=asdict(cfg),
                            extra={"read_chars": base_chars + seen,
@@ -1057,6 +1066,32 @@ def cmd_read(args):
               f"{nats/1e6:.1f}M nats from {base_chars/1e6:.1f}M characters "
               f"at {float(before or 1.2):.3f} nats each", flush=True)
     grads = collections.deque(maxlen=400)      # and the gradient norms
+    pending = []          # (loss on the device, position in the visit)
+
+    def settle():
+        """
+        Read the steps' losses back and file them, in the order they were
+        taken: into this visit's losses, the recent ones, the window-position
+        evidence and the information count. Everything that reads those
+        settles first, so it sees exactly what reading each loss at its own
+        step put there.
+        """
+        nonlocal nats
+        if not pending:
+            return
+        got = torch.stack([t for t, _ in pending]).tolist()
+        for v, (_, j) in zip(got, pending):
+            fl.append(v)
+            recent.append(v)
+            by_pos[j].append(v)
+            nats += v * args.chunk
+        pending.clear()
+
+    def grad_mean():
+        """The recent gradient norms' mean, read back from the device."""
+        return (float(np.mean(torch.stack(list(grads)).tolist()))
+                if grads else None)
+
     last_save = time.time()
     mark_t, mark_c = time.time(), 0            # for the reading rate
     tracer = (_Tracer(args.trace_routes, args.trace_chunks)
@@ -1101,7 +1136,9 @@ def cmd_read(args):
                 # first pass admits the ones its characters ask for most, and
                 # they stay on the card through the backward and the
                 # optimiser step. `loads_before` only counts them.
-                nxt = r.peek()
+                # (only the tracer reads it, and it is a copy to the device)
+                nxt = (r.peek() if tracer is not None and not tracer.full()
+                       else None)
                 loads_before = pool.loads
                 # One rate, scaled by the plasticity controller. It moves
                 # only when held-out says something has changed - down on a
@@ -1133,12 +1170,13 @@ def cmd_read(args):
                 if loss is None:
                     break
                 loss.backward()
-                grads.append(float(torch.nn.utils.clip_grad_norm_(
-                    model.parameters(), args.clip)))
+                # kept on the device, like the loss: read back when reported
+                grads.append(torch.nn.utils.clip_grad_norm_(
+                    model.parameters(), args.clip))
                 if step % 8 == 0:
                     # how much of the trunk gradient is signal. Reported only:
                     # a signal is watched before it is trusted with anything.
-                    snr.observe(trunk)
+                    snr.observe(trunk, report=False)
                 opt.step()
                 moved = pool.loads - loads_before      # admitted by the forward
                 swapped += moved
@@ -1150,11 +1188,15 @@ def cmd_read(args):
                 # every step so the gradient can reach all of it, and keeps no
                 # cache between steps. Detaching is what used to cut the
                 # gradient at the chunk boundary.
-                fl.append(float(loss))
-                recent.append(float(loss))
-                by_pos[j].append(float(loss))
+                #
+                # The loss stays on the device until something reads it
+                # (settle): a float() here made the host wait for the
+                # backward and the optimiser step before it could queue any
+                # of the next step's work.
+                pending.append((loss.detach(), j))
+                if len(pending) >= 256:
+                    settle()
                 seen += args.chunk
-                nats += float(loss) * args.chunk
                 step += 1
                 pool.now = step          # the clock the expert trial reads
                 plast.tick()
@@ -1164,7 +1206,9 @@ def cmd_read(args):
                     # READING SPEED closes here, before the held-out check and
                     # the samples: characters trained over the time spent
                     # reading since the last round ended. Neither the check
-                    # nor the writing can leak into it.
+                    # nor the writing can leak into it. Settling first counts
+                    # the steps still running on the device as reading.
+                    settle()
                     read_rate = (seen - mark_c) / max(time.time() - mark_t,
                                                       1e-6)
                     v_ = se_ = None
@@ -1200,7 +1244,7 @@ def cmd_read(args):
                                   opt.param_groups[-1]["lr"],
                                   info["characters"], ctx_now, ctx_max,
                                   context_gain(), read_rate,
-                                  float(np.mean(grads)) if grads else None,
+                                  grad_mean(),
                                   args.clip, plast.state(),
                                   write_rate=write_rate)
                     rp = pool.report()
@@ -1340,6 +1384,7 @@ def cmd_read(args):
                           f"({seen/1e6:.1f}M characters)", flush=True)
                 stop = True
             lane.rest(model)               # the window is done; free its cache
+            settle()
             if fl:
                 losses.append(float(np.mean(fl)))
                 if args.verbose:
@@ -1348,6 +1393,7 @@ def cmd_read(args):
                           flush=True)
             if stop or seen >= target:
                 break
+    settle()
     el = time.time() - t0
     read_rate = (seen - mark_c) / max(time.time() - mark_t, 1e-6)
     print(f"\nread {seen/1e6:.2f}M characters in {el/60:.1f}m "
@@ -1381,7 +1427,7 @@ def cmd_read(args):
                       float(np.mean(recent)) if recent else None,
                       opt.param_groups[-1]["lr"], info["characters"],
                       ctx_now, ctx_max, context_gain(), read_rate,
-                      float(np.mean(grads)) if grads else None, args.clip,
+                      grad_mean(), args.clip,
                       write_rate=write_rate)
         print(f"  final samples in {args.sample_log}")
 
@@ -2239,6 +2285,11 @@ def main():
                          "forgetting happens; it learns slower on purpose")
     rd.add_argument("--grow-mem-frac", type=float,
                     default=_cfg(_c, "growth.mem_frac", 0.85))
+    rd.add_argument("--compile", action="store_true",
+                    help="torch.compile each block's attention sub-layer and "
+                         "the per-row readout of a training forward (dynamic "
+                         "shapes). Off by default; the expert pool and the "
+                         "halting loop stay eager")
     rd.set_defaults(fn=cmd_read)
 
     st = sub.add_parser(

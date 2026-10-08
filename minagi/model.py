@@ -407,11 +407,25 @@ class Block(nn.Module):
         self.ln2 = RMSNorm(cfg.d_model)
         self.mlp = SwiGLU(cfg)
 
-    def forward(self, x, cos, sin, cache=None, active=None):
+    # The attention sub-layer through torch.compile, set by
+    # RecurCoder.compile_static; None runs it eagerly. Only a forward without
+    # a cache takes it - training's - so writing and held-out stay eager.
+    compiled = None
+
+    def _attend(self, x, cos, sin):
+        x = x + self.attn(self.ln1(x), cos, sin)
+        return x, self.ln2(x)
+
+    def forward(self, x, cos, sin, cache=None, active=None, n_active=None):
         """`active` marks the positions still being computed; an expert pool
         runs its experts for those alone. Attention still reads every
-        position, because the rest are still what later positions see."""
-        x = x + self.attn(self.ln1(x), cos, sin, cache)
+        position, because the rest are still what later positions see.
+        `n_active` is how many are marked, when the caller knows."""
+        if cache is None and self.compiled is not None:
+            x, u = self.compiled(x, cos, sin)
+        else:
+            x = x + self.attn(self.ln1(x), cos, sin, cache)
+            u = self.ln2(x)
         if active is not None and getattr(self.mlp, "takes_active", False):
-            return x + self.mlp(self.ln2(x), active)
-        return x + self.mlp(self.ln2(x))
+            return x + self.mlp(u, active, n_active)
+        return x + self.mlp(u)

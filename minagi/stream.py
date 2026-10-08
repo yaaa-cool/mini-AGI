@@ -280,9 +280,15 @@ class FileReader:
         # early in a file it is short and grows - which is the warm-up, and
         # needs no special case
         start = max(0, end - self.context)
-        a = self.data[start:end + 1].astype(np.int64)
-        x = torch.from_numpy(a[:-1]).to(self.device).unsqueeze(0)
-        y = torch.from_numpy(a[1:]).to(self.device).unsqueeze(0)
+        # one copy for inputs and targets, and on a GPU from pinned memory
+        # without a wait: a copy from pageable memory makes the host wait for
+        # everything still queued, which is the previous step's optimiser
+        a = torch.from_numpy(self.data[start:end + 1].astype(np.int64))
+        if torch.device(self.device).type == "cuda":
+            a = a.pin_memory().to(self.device, non_blocking=True)
+        else:
+            a = a.to(self.device)
+        x, y = a[:-1].unsqueeze(0), a[1:].unsqueeze(0)
         with amp(self.device):
             # pos_offset 0: the window is its own sequence. Rotary positions
             # are relative, so a character sliding from index 16,383 to 15,871

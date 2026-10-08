@@ -71,6 +71,18 @@ class Expert(nn.Module):
         return x
 
 
+def _where(mask, count):
+    """
+    The positions where a 1-D `mask` holds, in order - what indexing with the
+    mask gathers - when the host already knows there are `count` of them.
+
+    Indexing with a boolean mask, or nonzero(), reads the count back from the
+    device to size its output, so the host waits for every kernel queued
+    before it. A stable sort puts the held positions first in their own order
+    and needs no count.
+    """
+    return torch.argsort((~mask).to(torch.uint8), stable=True)[:count]
+
 
 def expert_levels(e):
     """
@@ -345,20 +357,29 @@ class PooledMLP(nn.Module):
     # Block.forward passes `active` only to an MLP that says it takes it
     takes_active = True
 
-    def forward(self, x, active=None):
+    def forward(self, x, active=None, n_active=None):
         """
         `active` [B, T] marks the characters still being computed; the rest
         have halted, and route nowhere. They ask for no experts, take no
         expert's capacity, and count in none of the statistics or the
         balancing loss - the pool sees exactly what writing would ask of it.
+
+        `n_active` is how many of them there are, when the caller has already
+        read that back (RecurCoder.forward does, once per row); without it
+        this reads it back itself.
         """
-        if active is None or bool(active.all()):
+        if active is None:
+            return self._route(x)
+        if n_active is None:
+            n_active = int(active.sum())
+        if n_active == active.numel():
             return self._route(x)
         B, T, D = x.shape
         m = active.reshape(-1)
         out = torch.zeros(B * T, D, device=x.device, dtype=x.dtype)
-        if bool(m.any()):
-            out[m] = self._route(x.reshape(-1, D)[m].unsqueeze(0))[0]
+        if n_active:
+            at = _where(m, n_active)
+            out[at] = self._route(x.reshape(-1, D)[at].unsqueeze(0))[0]
         return out.view(B, T, D)
 
     @staticmethod
@@ -560,7 +581,10 @@ class PooledMLP(nn.Module):
                 out.index_add_(0, t_sorted, gathered * w_sorted.unsqueeze(-1))
                 return out.view(B, T, D)
 
-        counts = torch.bincount(e_sorted, minlength=n)
+        # the per-slot counts are `hit` again, exactly (whole numbers far below
+        # 2^24): on a GPU bincount reads the indices' min and max back to size
+        # its output, two waits a row for nothing this needs
+        counts = hit.long()
         counts_l = counts.tolist() if n else []      # the one read-back: cap, and runs
         cap = max(counts_l) if counts_l else 0
         if cap == 0:
@@ -609,8 +633,11 @@ class PooledMLP(nn.Module):
             limit = max(1, int(math.ceil(
                 self.capacity_factor * e_sorted.numel() / n)))
             if cap > limit:
-                keep = slot < limit
-                self.dropped = self.dropped + (~keep).sum()   # read by pool_dropped
+                # how many survive is known from counts_l, so the kept
+                # positions are found without a read-back per mask index
+                kept = sum(min(c, limit) for c in counts_l)
+                keep = _where(slot < limit, kept)
+                self.dropped += e_sorted.numel() - kept      # read by pool_dropped
                 e_sorted, t_sorted = e_sorted[keep], t_sorted[keep]
                 w_sorted, slot = w_sorted[keep], slot[keep]
                 cap = limit
