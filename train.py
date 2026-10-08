@@ -422,9 +422,28 @@ class _Tracer:
             "loss": float(loss), "seen": int(seen),
             "resident": [int(e) for e in pool.slots if e >= 0],
             "experts": int(pool.n_experts()),
+            "calls": len(got), "window": int(got[0][0].shape[0]),
         })
 
     written = False
+
+    @staticmethod
+    def _stack(chunks, fill):
+        """
+        Chunks as one [chunks, calls, window, k] array. The depth is drawn per
+        forward and the window grows through a visit, so they differ: a
+        shorter one is padded with `fill` after its last call and BEFORE its
+        first character, so the window always ends at the last position, where
+        the chunk's own text is. Padding reads as a halted character (expert
+        -1, weight 0); `calls` and `window` in each chunk's meta say how much
+        is real.
+        """
+        import numpy as _np
+        c = max(a.shape[0] for a in chunks)
+        n = max(a.shape[1] for a in chunks)
+        return _np.stack([_np.pad(a, ((0, c - a.shape[0]), (n - a.shape[1], 0),
+                                      (0, 0)), constant_values=fill)
+                          for a in chunks])
 
     def write(self, cfg, precision, chunk):
         import json as _json
@@ -432,7 +451,7 @@ class _Tracer:
         self.written = True
         _np.savez_compressed(
             self.path,
-            ids=_np.stack(self.ids), weights=_np.stack(self.wts),
+            ids=self._stack(self.ids, -1), weights=self._stack(self.wts, 0),
             text=_np.stack(self.text),
             meta=_json.dumps({"chunks": self.meta, "swaps": self.swaps,
                               "chunk": chunk,

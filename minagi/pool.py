@@ -380,6 +380,17 @@ class PooledMLP(nn.Module):
         if n_active:
             at = _where(m, n_active)
             out[at] = self._route(x.reshape(-1, D)[at].unsqueeze(0))[0]
+            if _ROUTES is not None:
+                # the capture saw only the live characters; put them back at
+                # their positions so the entry covers all B*T, like every
+                # other call's. A halted character picked expert -1, weight 0.
+                ids, w = _ROUTES[-1]
+                at = at.cpu()
+                full = ids.new_full((B * T, ids.shape[1]), -1)
+                full[at] = ids
+                fw = w.new_zeros(B * T, w.shape[1])
+                fw[at] = w
+                _ROUTES[-1] = (full, fw)
         return out.view(B, T, D)
 
     @staticmethod
@@ -995,6 +1006,11 @@ class capture_routes:
 
     The ids are EXPERT ids, not slot numbers, so they stay comparable across
     a swap: the same expert keeps the same id whichever slot it lands in.
+
+    With halt_freeze a character that has halted routes nowhere: its row
+    reads expert -1 with weight 0. A pass that every character skipped
+    (they had all halted) makes no entry, so the list can be shorter than
+    the depth drawn.
     """
 
     def __enter__(self):
