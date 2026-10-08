@@ -167,7 +167,7 @@ pool:
   # row at the usual pace whatever the weight. 0 turns it off. In a 15-minute
   # test 0.01 took the experts in use on held-out from 59 to 114, at a cost of
   # 0.023 in held-out loss over those minutes.
-  balance: 0.001
+  balance: 2.5e-4
 
   # THE TEMPERATURE OF EXPERT SELECTION - which experts compute a character,
   # NOT which character comes out. Characters are always chosen greedily; any
@@ -194,9 +194,10 @@ training:
                           # computes bf16 natively
 
   # THE LEARNING RATE IS NOT SCHEDULED. minagi/plasticity.py watches held-out
-  # and moves the rate in both directions: easing it down without evidence of
-  # improvement, stepping it back up when held-out jumps and stays there.
-  chunk: 2048             # characters between steps within the window. Keep
+  # and moves the rate in both directions: up while held-out improves, down
+  # when it measurably gets worse, and back up when held-out jumps and stays
+  # there. The floor (x0.05 of lr) is in plasticity.py.
+  chunk: 2048            # characters between steps within the window. Keep
                           # it <= context_start (bug #18)
   lr: 3.0e-4
   trunk_lr_mult: 0.1      # the trunk is shared by every domain and is where

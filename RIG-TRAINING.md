@@ -51,6 +51,11 @@ plain `read data/train` reads it as a ninth subject.
 
 ```bash
 mkdir -p $W
+# what the card does with this config: attention kernels, bf16 vs fp32, one
+# learning step as chars/s and peak memory (random weights in a temp dir; it
+# refuses while something else holds most of the card). --window 2048 is
+# where a fresh model reads (context_start); its default, 4096, is context_end
+python3 tools/device_check.py --window 2048 --chunk 2048 > $W/device_check.log 2>&1
 nohup python3 train.py read data/train --save --weights-dir $W/weights \
     --held-out data/val --sample-every 10 --sample-log $W/samples.txt \
     > $W/read.log 2>&1 &     # --save: checkpoint every save_every min + at end
@@ -97,7 +102,11 @@ python3 train.py read data/replay --weights-dir $W/weights-persona \
 
 - **lr.** With a config, `read` defaults to `training.lr` (3e-4), not the 5e-5
   the README names. Start an add-on read at 1e-4 (unmeasured starting point);
-  `minagi/plasticity.py` then moves it with held-out. `trunk_lr_mult` (0.1) keeps the shared trunk slow.
+  `minagi/plasticity.py` then moves it with held-out: it holds while held-out
+  is flat, rises while it improves (never above `--lr`), and comes down only
+  when held-out measurably worsens twice running, to a floor of x0.05.
+  Evaluations under 32 optimiser steps apart do not count, so a very short
+  read barely moves it. `trunk_lr_mult` (0.1) keeps the shared trunk slow.
 - **Pass.** persona held-out falls. Each of the other eight stays within the
   +/- that `read` prints. A lane that rises past that is forgetting: lower
   `--lr`, or give persona a smaller share.
