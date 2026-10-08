@@ -22,14 +22,16 @@ with idle experts means the optimiser is stuck, not that the model is full.
 New experts arrive gated to almost zero and are pruned away if they never contribute.
 """
 
+import itertools
 import math
+import os
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 
-from .precision import compute_dtype
+from .precision import dispatch_dtype
 
 class Expert(nn.Module):
     """
@@ -359,6 +361,29 @@ class PooledMLP(nn.Module):
             out[m] = self._route(x.reshape(-1, D)[m].unsqueeze(0))[0]
         return out.view(B, T, D)
 
+    @staticmethod
+    def _runs(e_sorted):
+        """Assignments sorted by expert, as (expert, how many) runs - one
+        read-back of the indices, which the host needs to pick the weights."""
+        return [(e, sum(1 for _ in g)) for e, g in itertools.groupby(e_sorted.tolist())]
+
+    @staticmethod
+    def _few(src, dt, W1, W3, W2, runs, t_sorted):
+        """
+        Each expert that was routed to, on its own rows: the arithmetic of the
+        batched dispatch for a forward of a few characters, without computing
+        the slots nothing was routed to. Assignments arrive sorted by expert,
+        so each expert's rows are one contiguous run (_runs).
+        """
+        x = src[t_sorted].to(dt)
+        out, start = [], 0
+        for e, c in runs:
+            xe = x[start:start + c]
+            h = F.silu(xe @ W1[e].t()) * (xe @ W3[e].t())
+            out.append(h @ W2[e].t())
+            start += c
+        return torch.cat(out).to(src.dtype)
+
     def _route(self, x):
         # see capture_routes() at the bottom of this file
         B, T, D = x.shape
@@ -444,7 +469,9 @@ class PooledMLP(nn.Module):
         # measured BEFORE normalisation - afterwards it sums to 1 by
         # construction and carries no information
         with torch.no_grad():
-            kept = float(w.sum(-1).mean())
+            # kept on the device: a float() here would make every row wait for
+            # the GPU, for a number that is only ever reported
+            kept = w.sum(-1).mean()
             # How many experts the router actually wants: the smallest number
             # covering 90% of its probability mass. If that exceeds k, the
             # router is being forced to discard experts it would have used, and
@@ -494,8 +521,8 @@ class PooledMLP(nn.Module):
             # wants to spread across more experts than k, the pool is too
             # small to express what it is trying to do - that is capacity
             # pressure, and it is visible without waiting for a plateau.
-            p.pressure = 0.9 * float(p.pressure) + 0.1 * (1.0 - kept)
-            p.want_k = 0.9 * float(p.want_k) + 0.1 * float(want)
+            p.pressure = 0.9 * p.pressure + 0.1 * (1.0 - kept)
+            p.want_k = 0.9 * p.want_k + 0.1 * want
         frac = F.one_hot(idx[:, 0], n).float().mean(0)
         self.aux = ((frac * probs.mean(0)).sum() * n
                     + self.z_weight * torch.logsumexp(logits, -1).pow(2).mean())
@@ -510,8 +537,32 @@ class PooledMLP(nn.Module):
 
         order = torch.argsort(flat_e)
         e_sorted, t_sorted, w_sorted = flat_e[order], tok[order], flat_w[order]
+
+        # WRITING: a forward of a few characters that computes no gradient -
+        # one character of a reply - reads its assignments back once, here,
+        # and runs only the experts it was routed to (_few), from the slots'
+        # weights cast once and kept (PagedPool.inference_weights). The
+        # counts, capacity and slot buffer below would each make the host
+        # wait for the device, at every row of every character, for nothing
+        # this needs. An assignment that capacity would drop sends it the
+        # long way, which drops it.
+        if (e_sorted.numel() <= 64 and getattr(self, "fast_inference", True)
+                and not torch.is_grad_enabled() and hasattr(p, "inference_weights")
+                and not hasattr(p, "stacked_subset") and len(p.stacked()) == 1):
+            runs = self._runs(e_sorted)
+            limit = (max(1, int(math.ceil(self.capacity_factor * e_sorted.numel() / n)))
+                     if n and self.capacity_factor else None)
+            if runs and (limit is None or max(c for _, c in runs) <= limit):
+                self.routed += int(e_sorted.numel())
+                dt = dispatch_dtype(flat.device, flat.dtype)
+                gathered = self._few(flat, dt, *p.inference_weights(dt), runs, t_sorted)
+                out = torch.zeros_like(flat)
+                out.index_add_(0, t_sorted, gathered * w_sorted.unsqueeze(-1))
+                return out.view(B, T, D)
+
         counts = torch.bincount(e_sorted, minlength=n)
-        cap = int(counts.max().item()) if n else 0
+        counts_l = counts.tolist() if n else []      # the one read-back: cap, and runs
+        cap = max(counts_l) if counts_l else 0
         if cap == 0:
             return torch.zeros_like(x)
 
@@ -529,7 +580,8 @@ class PooledMLP(nn.Module):
             e_sorted = remap[e_sorted]
             n = len(present)
             counts = torch.bincount(e_sorted, minlength=n)
-            cap = int(counts.max().item()) if n else 0
+            counts_l = counts.tolist() if n else []
+            cap = max(counts_l) if counts_l else 0
             starts = torch.cumsum(counts, 0) - counts
             slot = torch.arange(e_sorted.numel(),
                                 device=flat.device) - starts[e_sorted]
@@ -558,10 +610,35 @@ class PooledMLP(nn.Module):
                 self.capacity_factor * e_sorted.numel() / n)))
             if cap > limit:
                 keep = slot < limit
-                self.dropped += int((~keep).sum())
+                self.dropped = self.dropped + (~keep).sum()   # read by pool_dropped
                 e_sorted, t_sorted = e_sorted[keep], t_sorted[keep]
                 w_sorted, slot = w_sorted[keep], slot[keep]
                 cap = limit
+
+        # EXACT SIZE. The rectangle above pads every slot to the busiest one,
+        # and within a text the busiest slot takes about twice its share: on
+        # the real pool 36-43% of the batched arithmetic, forward and backward,
+        # was padding. Each slot instead multiplies just its own run of
+        # characters - the same experts, the same drops, the same arithmetic on
+        # every real row. Slower per FLOP than one batched matmul, faster in
+        # total: on an RTX 3070, 1.11x in bf16 and 1.16x in fp32 for this
+        # layer, with 60% less memory in its backward. Single-level experts
+        # only; MINAGI_DISPATCH=padded restores the rectangle.
+        runs = [(e, min(c, cap)) for e, c in enumerate(counts_l) if c]
+
+        def run_exact(src, W1, W3, W2):
+            dt = dispatch_dtype(src.device, src.dtype)
+            xs = src[t_sorted].to(dt)
+            # unbind, not W1[e]: indexing a parameter thirty-two times makes
+            # thirty-two full-size zero gradients in the backward; unbind's
+            # backward is one stack
+            w1, w3, w2 = (W.to(dt).unbind(0) for W in (W1, W3, W2))
+            outs, start = [], 0
+            for e, c in runs:
+                xe = xs[start:start + c]
+                outs.append((F.silu(xe @ w1[e].t()) * (xe @ w3[e].t())) @ w2[e].t())
+                start += c
+            return torch.cat(outs).to(src.dtype)
 
         def run(src, *ws):
             lv = [(ws[i], ws[i + 1], ws[i + 2]) for i in range(0, len(ws), 3)]
@@ -571,9 +648,7 @@ class PooledMLP(nn.Module):
             # is the difference between fitting on the card and not. Autocast
             # does not do it for us: the weights are cast TO buf's dtype a few
             # lines below, so the matmul runs at whatever buf is.
-            dt = compute_dtype()
-            if src.device.type != "cuda":
-                dt = src.dtype
+            dt = dispatch_dtype(src.device, src.dtype)
             buf = torch.zeros(n, cap, D, device=src.device, dtype=dt)
             buf[e_sorted, slot] = src[t_sorted].to(dt)
             if len(lv) == 1:
@@ -591,11 +666,30 @@ class PooledMLP(nn.Module):
                 x = x + torch.bmm(h, W2.transpose(1, 2).to(x.dtype))
             return x[e_sorted, slot].to(src.dtype)
 
+        # WRITING AND HELD-OUT: no gradient, so the slots' weights in the
+        # compute dtype come from a copy cast once and kept until the card
+        # changes (PagedPool.inference_weights) instead of being cast at every
+        # row. And a forward of a few characters - one being written - runs
+        # only the experts it was routed to, not every slot of the card.
+        if (getattr(self, "fast_inference", True) and not torch.is_grad_enabled()
+                and hasattr(p, "inference_weights") and len(levels) == 1):
+            dt = dispatch_dtype(flat.device, flat.dtype)
+            levels = [p.inference_weights(dt)]
+            if e_sorted.numel() <= 64:
+                gathered = self._few(flat, dt, *levels[0], self._runs(e_sorted),
+                                     t_sorted)
+                out = torch.zeros_like(flat)
+                out.index_add_(0, t_sorted, gathered * w_sorted.unsqueeze(-1))
+                return out.view(B, T, D)
+
         flat_w = tuple(t for lv_ in levels for t in lv_)
+        fn = (run_exact if len(levels) == 1
+              and os.environ.get("MINAGI_DISPATCH", "exact").strip().lower() != "padded"
+              else run)
         if self.grad_checkpoint and self.training and torch.is_grad_enabled():
-            gathered = checkpoint(run, flat, *flat_w, use_reentrant=False)
+            gathered = checkpoint(fn, flat, *flat_w, use_reentrant=False)
         else:
-            gathered = run(flat, *flat_w)
+            gathered = fn(flat, *flat_w)
 
         out = torch.zeros_like(flat)
         out.index_add_(0, t_sorted, gathered * w_sorted.unsqueeze(-1))
