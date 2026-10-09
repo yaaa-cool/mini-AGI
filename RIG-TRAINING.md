@@ -144,8 +144,11 @@ on a 3070. On the RTX 3060 (2026-10-08, after c4b13a2), padded measured:
 The expert arithmetic is the same; only the matmul reduction order differs.
 Eager CUDA is not bitwise reproducible on this card either way: the same seed
 diverges from step 0. Over 500 steps and 5 runs per mode, padded's last-100
-loss came out -0.35% from exact (p=0.51), with no significant difference in
-admissions or ponder.
+loss came out -0.35% from exact (p=0.51; the 95% CI of -1.6..+0.9% cannot
+rule out a ~1.5% difference), and admissions showed no significant
+difference. Ponder was higher with padded at all four seeds, by 0.2 to 1.6%.
+That is not significant (sign test p=0.125), but it is worth watching. The
+bench and gate outputs are in /mnt/data/runs/mini-agi/perf2/ on the rig.
 
 ```bash
 MINAGI_DISPATCH=padded .venv/bin/python train.py read ...
@@ -163,8 +166,11 @@ The `tools/perf_*` scripts measure without touching training code:
 
 These approaches gave nothing:
 
-- `--compile` of the whole model: -39% on the 209M model, because of dynamic
-  recompiles.
+- `read --compile` (c4b13a2; it compiles the attention sub-layer and the
+  per-row readout, not the experts or the halting loop): -39% on the 209M
+  config.yaml over a 3-minute rig bench, because of dynamic recompiles. The
+  throughput wave measured it; its outputs are in
+  /mnt/data/runs/mini-agi/bench/.
 - A compiled padded SwiGLU core with bucketed shapes: +2% warm. It was not
   landed.
 
