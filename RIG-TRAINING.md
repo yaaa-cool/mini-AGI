@@ -132,6 +132,45 @@ jq -r '.domains[] as $d | "\($d) \(.rows[-1][$d] - .baseline[$d])"' \
 Damage in the massed run that the rotated run lacks is the forgetting the
 replay mix in section 4 avoids.
 
+## 6. Throughput on config.small [GPU - owner release]
+
+For config.small, set `MINAGI_DISPATCH=padded`. It is upstream's batched
+expert dispatch, and the per-slot `exact` default is tuned for the 209M model
+on a 3070. On the RTX 3060 (2026-10-08, after c4b13a2), padded measured:
+
+- 7,215 chars/s single-run, against 4,827 for exact (1.49x).
+- 8,395 chars/s in total with 3 runs side by side, with the GPU at 99%.
+
+The expert arithmetic is the same; only the matmul reduction order differs.
+Eager CUDA is not bitwise reproducible on this card either way: the same seed
+diverges from step 0. Over 500 steps and 5 runs per mode, padded's last-100
+loss came out -0.35% from exact (p=0.51), with no significant difference in
+admissions or ponder.
+
+```bash
+MINAGI_DISPATCH=padded .venv/bin/python train.py read ...
+```
+
+The `tools/perf_*` scripts measure without touching training code:
+
+```bash
+.venv/bin/python tools/perf_bench.py --warmup 20 --steps 200     # chars/s
+.venv/bin/python tools/perf_profile.py --out runs/perf/profile   # 30-step trace
+.venv/bin/python tools/perf_trace_summary.py runs/perf/profile/trace.json.gz
+.venv/bin/python tools/perf_equiv.py --steps 500 --seed 0 --out runs/perf/a
+.venv/bin/python tools/perf_equiv.py --compare runs/perf/a/equiv.jsonl runs/perf/b/equiv.jsonl
+```
+
+These approaches gave nothing:
+
+- `--compile` of the whole model: -39% on the 209M model, because of dynamic
+  recompiles.
+- A compiled padded SwiGLU core with bucketed shapes: +2% warm. It was not
+  landed.
+
+What is left is about 6,800 kernel launches per step from about 14 recurrent
+rows. Halting and paging make those rows data-dependent, so they stay eager.
+
 ## Tests (CPU)
 
 ```bash
