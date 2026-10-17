@@ -377,7 +377,7 @@ Underneath: `tools/rig/remote/status.sh $RUNS/w5-A` prints the last gpu.csv
 row, then `maxT meanT meanSM minSM swThermalActive hwThermalActive`, guard
 hits, the latest speed, the gate lines from read.log, the held-out banner and
 the latest check (see below), the start time and ETA (from `--minutes` in
-`cmd`), and a last line `state: running|ended|dead`. `--watch` repeats it
+`cmd`, or for a `--max-chars` run an estimate from the latest check's characters and reading rate), and a last line `state: running|ended|dead`. `--watch` repeats it
 until the state is no longer `running`, which replaces W4's `until ssh ...
 test -f end` loop. `fetch` copies `read.log`, `samples.txt`,
 `expert_rates.jsonl`, `gpu.csv`, `cmd`, `config.yaml`, `guard.log`, `start`,
@@ -574,7 +574,7 @@ data/replay-chat` builds the same half/half folder fresh inside the run dir
   line. Prefer it to `--minutes`: the speed with padded dispatch and the
   newborn rule on this run is unmeasured. W4 sizing for reference: A read
   28.5M chars in 182 min with exact dispatch, and padded measured about 1.5x.
-  The status ETA is computed from `--minutes` only, so this run shows none.
+  `status` shows an estimated ETA for a `--max-chars` run once the first check has landed.
 - **Newborn rule:** on by default. If the speed line is well below RIG-TRAINING.md
   §6, stop and rerun on a fresh name with `--no-newborn-lr`.
 
