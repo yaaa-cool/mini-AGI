@@ -31,6 +31,16 @@ CLI's own scripts are uploaded to `$RUNS/.rig/` on every call, by rsync, so a
 script a live run is still reading is replaced by rename and not rewritten
 under it.
 
+Shorthand in the by-hand blocks and W4 worked examples below, as W4 used it
+on the rig (log in as `train@10.0.1.19`, then `cd ~/train/mini-AGI`):
+
+```bash
+R=/mnt/data/runs/mini-agi                  # = $RUNS
+P=/home/train/train/mini-AGI/.venv/bin/python
+L=$R/w4-lanes                              # the chat-only lanes (0.6)
+W=$R/<run name>                            # the run dir
+```
+
 What a run dir holds: `guarded.sh` writes `read.log` (training output),
 `gpu.csv` (nvidia-smi every 10 s), `pid`, `start`, `end` (the exit code and
 time, written when the run exits) and `guard.log` (only if the 85 C guard
@@ -322,7 +332,8 @@ To reproduce W4 exactly, add `--dispatch exact`. Padded was measured on
 config.small only; on the 209M reference model it is unmeasured.
 
 Underneath: `train.sh` runs `gpu_free`, refuses an existing `$RUNS/w5-B`,
-selects the reference config (refused if any guarded run is live), `cp -a`s
+selects the reference config (refused only if that would change config.yaml
+while a guarded run is live), `cp -a`s
 `$RUNS/author/hf/weights` to `$RUNS/w5-B/weights` (`--from-weights` is
 relative to `$RUNS`), and launches:
 
@@ -338,7 +349,7 @@ Worked example (W4, recorded `runB2.sh`, the good relaunch):
 
 ```bash
 cp $R/config.reference.yaml config.yaml; grep -m1 "d_model" config.yaml
-W=$R/w4-B-2; mkdir -p $W && cp -a $R/author/hf/weights $W/weights
+W=$R/w4-B-lrreset; mkdir -p $W && cp -a $R/author/hf/weights $W/weights
 PYTHONUNBUFFERED=1 nohup $R/guarded.sh $W $P train.py read data/replay-chat --save --weights-dir $W/weights --held-out data/val --lr 1e-4 --lr-reset --minutes 120 --sample-every 10 --sample-log $W/samples.txt > $W/guard.out 2>&1 &
 ```
 
@@ -355,7 +366,9 @@ weights. The author's checkpoint carries `rate x0.119`, so `--lr 1e-4` alone
 really ran at about 1.2e-5. W4's first B launch (`w4-B`) did just that; it was
 stopped with `kill -TERM $(cat $W/pid)` after 0.05M chars and relaunched on a
 fresh copy with `--lr-reset`. Use `--lr-reset` whenever you continue someone
-else's or an old checkpoint on new data. It sets the main scale to x1; newborn
+else's or an old checkpoint on new data (without it the controller only
+resets itself once held-out shows the ground has moved). It sets the main
+scale to x1; newborn
 experts (section 4) start at the full `--lr` either way.
 
 W4 figures (exact dispatch, old held-out scale): 5.67M chars in 120 min
@@ -377,8 +390,9 @@ Underneath: `tools/rig/remote/status.sh $RUNS/w5-A` prints the last gpu.csv
 row, then `maxT meanT meanSM minSM swThermalActive hwThermalActive`, guard
 hits, the latest speed, the gate lines from read.log, the held-out banner and
 the latest check (see below), the start time and ETA (from `--minutes` in
-`cmd`, or for a `--max-chars` run an estimate from the latest check's characters and reading rate), and a last line `state: running|ended|dead`. `--watch` repeats it
-until the state is no longer `running`, which replaces W4's `until ssh ...
+`cmd`, or for a `--max-chars` run an estimate from the latest check's
+characters and reading rate), and a last line `state: running|ended|dead`.
+`--watch` repeats it until the state is no longer `running`, which replaces W4's `until ssh ...
 test -f end` loop. `fetch` copies `read.log`, `samples.txt`,
 `expert_rates.jsonl`, `gpu.csv`, `cmd`, `config.yaml`, `guard.log`, `start`,
 `end` and `device_check.log` with scp into `runs/<name>` of the checkout you
@@ -390,6 +404,7 @@ By hand on the rig, W4's recorded greps are still useful:
 grep 'samples ->' $W/read.log | cut -c1-200       # one line per sample interval
 grep -n -A1 '^held-out loss' $W/samples.txt       # held-out per LANE at every check
 kill -TERM $(cat $W/pid)                          # stop early (no CLI step); the 85 C guard does the same
+                                                  # --save checkpoints every save_every minutes and at the end
 ```
 
 How to read the numbers:
@@ -425,8 +440,8 @@ How to read the numbers:
   rate does not move on them. `--lr-reset` puts the main scale back at x1.
 - **Per-expert learning rate (574a397).** Under `training.newborn_lr` (on by
   default in both configs), an expert born during the read starts at the full
-  `--lr` and decays to the main rate, halving every `newborn_half` (15000) of
-  its own steps. `train` passes `--newborn-lr`, `--no-newborn-lr` or
+  `--lr` and decays to the main rate: every `newborn_half` (15000) of its own
+  steps halves how far above the main rate it is, in log terms. `train` passes `--newborn-lr`, `--no-newborn-lr` or
   `--newborn-half N` through to `train.py`. Each expert's rate at every check,
   as a factor of `lr`, goes to `expert_rates.jsonl` next to the sample log.
   It costs one GPU wait per step, which is unmeasured on the rig: if chars/s
@@ -574,7 +589,8 @@ data/replay-chat` builds the same half/half folder fresh inside the run dir
   line. Prefer it to `--minutes`: the speed with padded dispatch and the
   newborn rule on this run is unmeasured. W4 sizing for reference: A read
   28.5M chars in 182 min with exact dispatch, and padded measured about 1.5x.
-  `status` shows an estimated ETA for a `--max-chars` run once the first check has landed.
+  `status` shows an estimated ETA for a `--max-chars` run once the first
+  check has landed.
 - **Newborn rule:** on by default. If the speed line is well below RIG-TRAINING.md
   §6, stop and rerun on a fresh name with `--no-newborn-lr`.
 
