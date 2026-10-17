@@ -9,7 +9,7 @@ nvidia-smi --query-gpu=name,temperature.gpu,clocks.sm,memory.used,memory.total,p
 echo "compute apps:"
 nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader | sed 's/^/  /'
 echo "strata-swift: $(systemctl is-active strata-swift)"
-echo "config: $(active_config) ($(grep -m1 d_model "$REPO/config.yaml" | sed 's/^ *//'))"
+echo "config: $(active_config 2>/dev/null || echo unknown) ($(d_model "$REPO/config.yaml"))"
 echo "live guarded runs:"
 live_runs | sed 's/^/  /'
 gpu_free "$1" "$2"

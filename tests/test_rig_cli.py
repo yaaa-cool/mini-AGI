@@ -5,6 +5,8 @@ scripts, and lib.sh's config select run locally against a fake checkout."""
 import importlib.util
 import os
 import re
+import shlex
+import shutil
 import subprocess
 import types
 from pathlib import Path
@@ -126,7 +128,7 @@ def test_smoke(capsys):
     cmds = commands(out)
     assert (f"smoke.sh {RUNS}/w5-smoke small padded 15 "
             f"{RUNS}/w4-lanes/chat-train {RUNS}/w4-lanes/chat-val") in cmds[1]
-    assert "RIG_REPO=~/train/mini-AGI" in cmds[1]
+    assert 'RIG_REPO="$HOME"/train/mini-AGI' in cmds[1]
     assert "export MINAGI_DISPATCH=$DISPATCH" in out
     assert "tools/device_check.py --window 2048 --chunk 2048" in out
     assert "fresh_dir" in out and "GUARD_C=85" in out
@@ -271,6 +273,29 @@ def test_global_flags(capsys, monkeypatch):
     assert "RIG_REPO=/srv/m RIG_RUNS=/r" in cmds[1]
 
 
+def test_home_paths_reach_the_rig_expanded(capsys, tmp_path):
+    """A ~/ path goes as "$HOME"/..., so the rig's shell expands it (a quoted
+    ~ arrives literal and train.sh refuses it)."""
+    assert rig.rquote("~/w4 A/weights") == "\"$HOME\"/'w4 A/weights'"
+    assert rig.rquote("A=~/w") == 'A="$HOME"/w'
+    assert rig.rquote("/abs/~/x") == "'/abs/~/x'"
+    assert rig.rquote("a'b") == shlex.quote("a'b")
+    words = ["~/a b", "A=~/w", "~/", "x~/y", "$(touch pwned)"]
+    r = subprocess.run(["bash", "-c", "printf '%s\\n' " + " ".join(map(rig.rquote, words))],
+                       env=dict(os.environ, HOME=str(tmp_path)), cwd=tmp_path,
+                       capture_output=True, text=True)
+    assert r.stdout.splitlines() == [f"{tmp_path}/a b", f"A={tmp_path}/w", f"{tmp_path}/",
+                                     "x~/y", "$(touch pwned)"]
+    assert not (tmp_path / "pwned").exists()
+    rc, out = dry(capsys, "train", "--name", "t", "--data", "~/d", "--held-out", "~/v",
+                  "--from-weights", "~/w", "--minutes", "5")
+    launch = next(c for c in commands(out) if "train.sh" in c)
+    assert 'padded "$HOME"/w - - train.py read "$HOME"/d' in launch
+    assert '--held-out "$HOME"/v' in launch
+    rc, out = dry(capsys, "eval", "gen", "--name", "e", "--model", "A=~/w")
+    assert 'A="$HOME"/w' in commands(out)[-1]
+
+
 # ---- lib.sh's config select, run for real against a fake checkout
 
 def config_sh(tmp_path, *args):
@@ -327,3 +352,77 @@ def test_config_reference_needs_a_sync(fake_rig):
     (fake_rig / "runs" / ".rig" / "config.reference.yaml").unlink()
     rc, out = config_sh(fake_rig, "reference")
     assert rc == 2 and "rig.py sync" in out
+
+
+SMALL_NOW = "# d_model 512 -> 384, the cut is in width\nmodel:\n  d_model: 384    # SMALL\n  layers: 6\n"
+SMALL_OLD = "# d_model 512 -> 384\nmodel:\n  d_model: 384    # SMALL\n  layers: 4\n"
+
+
+def test_config_detected_by_d_model_not_bytes(fake_rig):
+    """No active-config yet: an older small copy (config.small.yaml changed
+    upstream since) is still small, and is not overwritten with reference."""
+    repo = fake_rig / "repo"
+    (repo / "config.small.yaml").write_text(SMALL_NOW)
+    (repo / "config.yaml").write_text(SMALL_OLD)
+    rc, out = config_sh(fake_rig)
+    assert rc == 0 and "config: small (d_model: 384" in out, out
+    assert (repo / "config.yaml").read_text() == SMALL_NOW
+    assert (fake_rig / "runs" / ".rig" / "active-config").read_text() == "small\n"
+
+
+def test_config_detection_skips_comments(fake_rig):
+    repo = fake_rig / "repo"
+    (repo / "config.yaml").write_text("# d_model 384 in the small one\nmodel:\n  d_model: 512\n")
+    rc, out = config_sh(fake_rig, "-")
+    assert rc == 0 and "kept (d_model: 512)" in out, out
+    rc, out = config_sh(fake_rig)
+    assert rc == 0 and "config: reference (d_model: 512)" in out, out
+
+
+def test_config_unknown_width_asks_for_config(fake_rig):
+    repo = fake_rig / "repo"
+    (repo / "config.yaml").write_text("model:\n  d_model: 256\n")
+    rc, out = config_sh(fake_rig)
+    assert rc == 2 and "d_model '256'" in out and "--config small|reference" in out, out
+    assert (repo / "config.yaml").read_text() == "model:\n  d_model: 256\n"
+    assert not (fake_rig / "runs" / ".rig" / "active-config").exists()
+    rc, out = config_sh(fake_rig, "small")
+    assert rc == 0 and (repo / "config.yaml").read_text() == "d_model: 384\n"
+
+
+# ---- status.sh's ETA, run for real against a fake run dir (needs GNU date)
+
+def gnu_date_path(tmp_path):
+    if subprocess.run(["date", "-d", "@0"], capture_output=True).returncode == 0:
+        return os.environ["PATH"]
+    gdate = shutil.which("gdate")
+    if not gdate:
+        pytest.skip("no GNU date")
+    shim = tmp_path / "bin"
+    shim.mkdir()
+    (shim / "date").symlink_to(gdate)
+    return f"{shim}:{os.environ['PATH']}"
+
+
+def test_status_eta_for_max_chars(tmp_path):
+    env = dict(os.environ, PATH=gnu_date_path(tmp_path), TZ="UTC")
+    w = tmp_path / "t"
+    w.mkdir()
+    (w / "start").write_text("2026-10-17T10:00:00+00:00\n")
+    (w / "cmd").write_text("# x\nMINAGI_DISPATCH=padded PYTHONUNBUFFERED=1 py train.py read d "
+                           "--max-chars 30e6 --sample-every 10\n")
+    (w / "read.log").write_text("  10.0M characters read in earlier sessions\n")
+    r = subprocess.run(["bash", str(REMOTE / "status.sh"), str(w)], env=env,
+                       capture_output=True, text=True)
+    assert "no estimate until samples.txt has a check" in r.stdout, r.stdout + r.stderr
+    (w / "samples.txt").write_text(
+        "step 500   15.0M of 500M characters (3.00%)   30 min   12 experts\n"
+        "context 4,096 characters of 32,768   reading 9,000 char/s\n"
+        "step 1,000   20.0M of 500M characters (4.00%)   60 min   12 experts\n"
+        "context 4,096 characters of 32,768   reading 5,000 char/s   writing 40.0 char/s\n")
+    r = subprocess.run(["bash", str(REMOTE / "status.sh"), str(w)], env=env,
+                       capture_output=True, text=True)
+    # 10M of 30M read this session at the 60 min check; 20M more at 5,000 char/s
+    assert ("ETA ~2026-10-17T12:06:40+00:00 (an estimate: --max-chars 30e6, "
+            "10.0M read at the last check, at its 5000 char/s") in r.stdout, r.stdout + r.stderr
+    assert r.stdout.splitlines()[-1].startswith("state: dead")

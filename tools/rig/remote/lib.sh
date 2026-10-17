@@ -1,8 +1,8 @@
 # shellcheck shell=bash
 # lib.sh : sourced by the other rig scripts, never run on its own.
 # rig.py puts the paths on the ssh command line as RIG_REPO, RIG_RUNS, RIG_PY;
-# the defaults are the rig's. RIG_REPO may arrive as "~/..." (rig.py quotes
-# every argument, so the remote shell did not expand it).
+# the defaults are the rig's. rig.py sends a ~/ path as "$HOME"/...; a
+# RIG_REPO set by hand may still arrive as a literal "~/...".
 REPO=${RIG_REPO:-$HOME/train/mini-AGI}
 REPO=${REPO/#\~/$HOME}
 RUNS=${RIG_RUNS:-/mnt/data/runs/mini-agi}
@@ -49,16 +49,28 @@ live_runs() {
   done
 }
 
+# d_model FILE : the line holding the d_model key, not a comment that names it.
+d_model() {
+  grep -m1 -E '^[[:space:]]*d_model:' "$1" | sed 's/^ *//'
+}
+
 # active_config : the config this rig is meant to run, as recorded by the
-# last select; before the first, whatever config.yaml is now.
+# last select; before the first, what config.yaml's d_model says it is (384
+# small, 512 reference - not a byte compare: config.small.yaml changes
+# upstream, and an older small copy is still small). Anything else fails.
 active_config() {
+  local width
   if [ -f "$RIG/active-config" ]; then
     cat "$RIG/active-config"
-  elif cmp -s "$REPO/config.yaml" "$REPO/config.small.yaml"; then
-    echo small
-  else
-    echo reference
+    return 0
   fi
+  width=$(d_model "$REPO/config.yaml" | sed -E 's/^d_model:[[:space:]]*([0-9]+).*/\1/')
+  case $width in
+    384) echo small ;;
+    512) echo reference ;;
+    *) echo "config.yaml has d_model '${width:-none}', neither small (384) nor reference (512): give rig.py sync --config small|reference" >&2
+       return 2 ;;
+  esac
 }
 
 # select_config small|reference|- : make <repo>/config.yaml that config.
@@ -70,7 +82,7 @@ active_config() {
 select_config() {
   local want=$1 src live
   if [ -z "$want" ] || [ "$want" = - ]; then
-    echo "config: $(active_config), kept ($(grep -m1 d_model "$REPO/config.yaml" | sed 's/^ *//'))"
+    echo "config: $(active_config 2>/dev/null || echo unknown), kept ($(d_model "$REPO/config.yaml"))"
     return 0
   fi
   case $want in
@@ -90,7 +102,7 @@ select_config() {
     cp "$src" "$REPO/config.yaml"
   fi
   echo "$want" > "$RIG/active-config"
-  echo "config: $want ($(grep -m1 d_model "$REPO/config.yaml" | sed 's/^ *//'))"
+  echo "config: $want ($(d_model "$REPO/config.yaml"))"
 }
 
 # fresh_dir DIR : refuse a run dir that exists - a reused --weights-dir resumes.
@@ -112,7 +124,7 @@ launch_guarded() {
     printf 'MINAGI_DISPATCH=%s PYTHONUNBUFFERED=1' "$MINAGI_DISPATCH"
     printf ' %q' "$@"
     echo; } > "$w/cmd"
-  PYTHONUNBUFFERED=1 nohup bash "$RIG/guarded.sh" "$w" "$@" > "$w/guard.out" 2>&1 &
+  PYTHONUNBUFFERED=1 nohup bash "$RIG/guarded.sh" "$w" "$@" < /dev/null > "$w/guard.out" 2>&1 &
   sleep 2
   echo "launched $w pid $(cat "$w/pid" 2>/dev/null)"
 }

@@ -23,13 +23,24 @@ python3 tools/rig/rig.py fetch N [--dest runs/N]
 Global flags go before the subcommand: `--host` (env `MINAGI_RIG_HOST`),
 `--admin-host` (cc, for sudo), `--repo`, `--runs`, `--python`, `--dry-run`.
 
-- Every GPU job (smoke, train, eval gen) runs under `MINAGI_DISPATCH=padded`
-  unless `--dispatch exact`, starts with the GPU-free check, and runs under
+- Every GPU job (smoke, train, eval gen) takes `--dispatch padded|exact`,
+  default `padded`, and runs under that `MINAGI_DISPATCH` (written into the
+  run's `cmd` either way). It starts with the GPU-free check and runs under
   `guarded.sh` (SIGTERM at 85 C, `gpu.csv` every 10 s) in a fresh
   `$RUNS/<name>`, which holds `cmd` and `config.yaml` as run.
+- Relative paths resolve differently per subcommand: **train**'s `--data`
+  and `--held-out` against `--repo` (train.py's working directory), but
+  **smoke**'s `--data` and `--held-out` against `--runs` (its defaults are
+  `$RUNS/w4-lanes/chat-train` and `chat-val`). `--from-weights` and
+  `eval gen --model` weights resolve against `--runs`. A `~/` path is the
+  rig's home.
 - `sync` keeps the rig's `config.yaml` and re-applies the active run config
   (`$RUNS/.rig/active-config`); config.yaml is never changed while a guarded
-  run is live.
+  run is live. Before the first select, the active config is read from
+  config.yaml's `d_model` (384 small, 512 reference); any other width makes
+  the sync stop and ask for `--config small|reference`.
+- `status` gives an ETA from `--minutes`, and for a `--max-chars` run an
+  estimate from the characters read at the last check and its reading rate.
 - `remote/` holds the rig-side scripts, uploaded to `$RUNS/.rig/` on each
   call. `w4-scripts/` is what W4 ran, kept as source material.
 

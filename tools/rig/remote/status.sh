@@ -39,6 +39,23 @@ if [ -f "$W/start" ]; then
   if [ -n "$MIN" ] && [ ! -f "$W/end" ]; then
     echo "ETA ~$(date -d "@$(( S0 + ${MIN%.*} * 60 ))" -Is) (--minutes $MIN from the start, then the closing eval and save)"
   fi
+  # --max-chars counts this session's characters; samples.txt's "step ... 12.3M"
+  # counts from the weights' first session, so the earlier sessions come off
+  MAXC=$(tr '\\' ' ' < "$W/cmd" 2>/dev/null | grep -oE -- "--max-chars +[0-9.eE+]+" | tail -1 | awk '{print $2}')
+  if [ -n "$MAXC" ] && [ ! -f "$W/end" ]; then
+    BASE=$(grep -m1 "characters read in earlier sessions" "$W/read.log" 2>/dev/null | awk '{print $1+0}')
+    EST=$(awk -v maxc="$MAXC" -v base="${BASE:-0}" -v s0="$S0" '
+      /^step [0-9,]+ +[0-9.]+M/ {c=$3+0; for(i=4;i<NF;i++) if($(i+1)=="min") m=$i+0}
+      match($0, /reading [0-9,]+ char\/s/) {r=substr($0, RSTART+8, RLENGTH-15); gsub(",", "", r); r+=0}
+      END{if(c=="" || r<=0) exit; d=(c-base)*1e6; left=maxc-d; if(left<0) left=0
+          printf "%d %.1f %d\n", s0+m*60+left/r, d/1e6, r}' "$S" 2>/dev/null)
+    if [ -n "$EST" ]; then
+      read -r T DONE RATE <<< "$EST"
+      echo "ETA ~$(date -d "@$T" -Is) (an estimate: --max-chars $MAXC, ${DONE}M read at the last check, at its $RATE char/s; then the closing eval and save)"
+    else
+      echo "ETA: --max-chars $MAXC; no estimate until samples.txt has a check with a reading rate"
+    fi
+  fi
 fi
 if [ -f "$W/end" ]; then
   echo "state: ended, $(head -1 "$W/end") at $(tail -1 "$W/end")"

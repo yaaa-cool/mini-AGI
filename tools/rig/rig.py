@@ -36,7 +36,9 @@ Decisions on the points the spec left open:
   --weights-dir resumes); --from-weights is `cp -a`'d into the new dir. There
   is no resume through this tool.
 - Relative paths. --from-weights and eval --model weights are relative to
-  --runs; --data and --held-out are relative to --repo (train.py's cwd).
+  --runs; train's --data and --held-out are relative to --repo (train.py's
+  cwd), smoke's to --runs (where its default chat lanes are). A ~/ path is
+  the rig's home.
 - Bounded runs. train needs --minutes or --max-chars: nothing unattended reads
   the whole corpus by accident. --drop-quietest is not exposed (it waits for
   N on stdin).
@@ -168,13 +170,11 @@ class Rig:
         if rc:
             return (rc, "") if capture else rc
         args = [str(x) for x in args]
-        repo = (f"~/{shlex.quote(self.repo[2:])}" if self.repo.startswith("~/")
-                else shlex.quote(self.repo))   # the remote shell expands ~/
-        remote = " ".join([f"RIG_REPO={repo}",
-                           f"RIG_RUNS={shlex.quote(self.runs)}",
-                           f"RIG_PY={shlex.quote(self.py)}",
-                           "bash", shlex.quote(f"{self.dir}/{name}"),
-                           *map(shlex.quote, args)])
+        remote = " ".join([f"RIG_REPO={rquote(self.repo)}",
+                           f"RIG_RUNS={rquote(self.runs)}",
+                           f"RIG_PY={rquote(self.py)}",
+                           "bash", rquote(f"{self.dir}/{name}"),
+                           *map(rquote, args)])
         if self.dry:
             self.show(name, args)
         return self.run(self.ssh(self.host, remote), capture=capture)
@@ -200,6 +200,16 @@ def number(s):
 def under(base, path):
     """path, or base/path when it is relative."""
     return path if path.startswith(("/", "~")) else f"{base}/{path}"
+
+
+def rquote(s):
+    """s quoted for the remote shell, with a ~/ at the start or after the
+    first = (NAME=~/weights) going as "$HOME"/ so the rig's home is used."""
+    m = re.match(r"^([^=/]*=)?~/(.*)$", s, re.S)
+    if not m:
+        return shlex.quote(s)
+    pre = shlex.quote(m[1]) if m[1] else ""
+    return f'{pre}"$HOME"/{shlex.quote(m[2]) if m[2] else ""}'
 
 
 def mix_spec(s):
