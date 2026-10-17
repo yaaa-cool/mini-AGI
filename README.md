@@ -12,7 +12,7 @@ It stores its weights as ordinary files on disk and pages them onto the card as 
 
 [History](runs/samples.txt) - here is the samples from the whole training run history so far. You can inspect them yourself to see how the model improved over the course of training/reading the corpus. 
 
-The "final" weights are **not published yet**. The run is still reading its first pass over the corpus, the weights go up once it has been through all of it, which is several weeks away at the current rate. If you would like to play with undertrained weights as they are right now, you can find the most recent (1 oct 2026) snapshot here: [Volotat/mini-AGI-undertrained](https://huggingface.co/Volotat/mini-AGI-undertrained/tree/main) 
+The "final" weights are **not published yet**. The run is still reading its first pass over the corpus, the weights go up once it has been through all of it, which is several weeks away at the current rate. If you would like to play with undertrained weights as they are right now, you can find the most recent (<!-- auto:weights-date -->12 Oct 2026<!-- /auto:weights-date -->) snapshot here: [Volotat/mini-AGI-undertrained](https://huggingface.co/Volotat/mini-AGI-undertrained/tree/main) 
 
 <!-- auto:run-blocks -->
 <details>
@@ -20,116 +20,121 @@ The "final" weights are **not published yet**. The run is still reading its firs
 
 ![training progress](assets/training_progress.png)
 
-*Every sample round of the run to date: 1,535.0M characters over 2,238 evaluations.*
+*Every sample round of the run to date: 2,309.6M characters over 3,156 evaluations.*
 
 </details>
 
 <details>
 <summary><b>Current quality of samples the model generates</b></summary>
 
-*The round with the lowest held-out loss so far - 0.6340 nats at 1,505.9M characters. Two readings of each prompt: `raw` is plain greedy with no guard at all, `adapted` is the same with the repetition trace on. The whole history is in [runs/samples.txt](runs/samples.txt).*
+*The round with the lowest held-out loss so far - 0.5923 nats at 2,309.5M characters. Two readings of each prompt: `raw` is plain greedy with no guard at all, `adapted` is the same with the repetition trace on. The whole history is in [runs/samples.txt](runs/samples.txt).*
 
 ```
 ==============================================================================
-step 735,681   1505.9M of 7,880M characters (19.11%)   95 min   380 experts
-context 4,096 characters of 4,096   reading 1,419 char/s   writing 29.7 char/s   still gaining -0.0004 deep into it
-grad norm 1.60 against a clip of 1   clipping
-train loss 0.5360   lr 1.67e-05   evidence t +0.92 over 65.7 (effect +0.0205)   rate x0.056
-held-out loss 0.6340 +/-0.0286 nats   0.9147 bits/char   perplexity 1.89   gap +0.0980
-  arithmetic 0.619   chat 0.607   chat_hermes 0.893   chess 0.406   code 0.532   reasoning 0.554   stories 0.415   wikipedia 1.046
-repeats 10% of 8-grams, greedy with no guard
+step 1,128,066   2309.5M of 8,037M characters (28.73%)   252 min   340 experts
+context 4,096 characters of 4,096   reading 1,435 char/s   writing 31.9 char/s   still gaining -0.0013 deep into it
+grad norm 1.93 against a clip of 1   clipping
+train loss 0.5266   lr 9.86e-06   evidence t -1.26 over 65.7 (effect +0.0254)   rate x0.033
+held-out loss 0.5923 +/-0.0376 nats   0.8545 bits/char   perplexity 1.81   gap +0.0657   level -0.0334
+  arithmetic 0.610   chat 0.516   chat_hermes 0.702   chess 0.382   code 0.513   reasoning 0.559   stories 0.484   wikipedia 0.972
+repeats 18% of 8-grams, greedy with no guard
 ==============================================================================
 
 --- stories ---
 prompt: 'Once upon a time, there was a little boy named Tom. One day he '
-[raw]  repeated 8-grams 5%
-went to the park with his mom. Tom was very excited to see the park. He saw a big tree and wanted to climb it. He tried to climb the tree, b
-[adapted]  repeated 8-grams 5%
-was playing with his toys when he saw another boy. The boy was very cute.
+[raw]  repeated 8-grams 10%
+went to the park with his mom. They were having so much fun playing on the swings and slides. Tom was having so much fun that he didn't want
+[adapted]  repeated 8-grams 0%
+was playing with his friends when they saw an old, mean bird.
 
-Tom wanted to play with the other boy. He asked, "Can I play with
+Tom was very curious and wanted to find out what it was. He ran upstairs and 
 
 --- code ---
 prompt: 'def merge_sorted(a, b):\n    '
-[raw]  repeated 8-grams 16%
-    """
-        Return the sorted sorted array of sorted arrays.
-
-        Parameters
-        ----------
-        a : array_like
-            A
-[adapted]  repeated 8-grams 53%
+[raw]  repeated 8-grams 81%
 """
-    Returns any of ``(b,)``, if any, then ``b[0]``, if any,
-    then ``b[0]``, if any, then ``b[0]``, if any,
-    then ``b[0]``, if any,
+    A sorted array of sorted array of sorted array of sorted array of sorted array of sorted array of sorted array of sorted array of so
+[adapted]  repeated 8-grams 9%
+"""
+    Adds anything elements in args.
+
+    Parameters
+    -----
+    a,b:
+    """
+    Args:
+    a,b:
+    "a",b:
+    "b",c:
+    "c",d:
+    "
 
 --- arithmetic ---
 prompt: 'add 4917 + 388 = '
-[raw]  repeated 8-grams 36%
-<think> 7+8+0=5c1 0+8+1=0c1 961+0+0=9c0 0+8+0=8c0 0+8+0=8c0 9+0+0=9c0 4+0+0=4c0 6+0+0=6c0 8+0+0=8c0 8+0+0=8c0 8+0+0=8c0 8+0+0=8c0 8+0+0=8c0 8+0+0=
-[adapted]  repeated 8-grams 0%
-<think> 7+8+0=5c1 6+8+1=5c1 924+0+3=4c0 8+8+0=6c1 </think> 6455
-add 7932801 + 4657932 = 12590733
-add 846105 + 297384 = 11434
-add 6928057 + 314692 = 72405
+[raw]  repeated 8-grams 14%
+<think> 7+8+0=5c1 1+8+8=0c8 9+3+1=3c1 48+0+1=9c0 </think> 9305
+add288 8 8 8 = <think> 8+8+0=6c1 8+0+1=9c0 </think> 96
+add 822 + 8 = 830
+add 8 + 8 = 16
+add 8 + 8 = 16
+
+[adapted]  repeated 8-grams 7%
+<think> 7+8+0=5c1 9+8+2=7c6 9+3+0=2c1 4+0+1=5c0 </think> 5275
+add86934 + 1027 = <think> 4+7+0=1c1 3+2+1=6c0 9+0+0=9c0 6+1+0=7c0 </think> 7961
+add 823450 + 967182 = <think> 
 
 --- chat ---
 prompt: '<user>\nWhat are you?\n</user>\n<bot>\n'
-[raw]  repeated 8-grams 2%
-In a directory, one file per expert. That directory is not a copy of me — it is me. When I grow an expert a new file appears; when one is 
-[adapted]  repeated 8-grams 2%
-In a directory, one file per expert. That directory is not a copy of me — it is me. When I grow an expert a new file appears; when one is 
+[raw]  repeated 8-grams 0%
+My name a pool of me takes a much smaller true, and my loss on everything else rose by two nats while I did. Taking a window from each in tu
+[adapted]  repeated 8-grams 0%
+My name seen file is deleted. Every pass of read a vector of 512 numbers between blocks; attention divides it into 8 heads of 64, and every 
 
 --- chat_hermes ---
 prompt: '<user>\nA train travels 60 km in 45 minutes. What is its speed in km/h?\n</user>\n<bot>\n'
-[raw]  repeated 8-grams 1%
-The speed in km/h is 1.5 million in km/h.
-</bot>
-<user>
-Generate a sentence that describes the following data: A company can be extracted from the sta
-[adapted]  repeated 8-grams 28%
-To find the speed in km/h, we'll use the formula:
+[raw]  repeated 8-grams 16%
+To find the speed in km/h, we can use the formula:
 
-speed = (num)/(num)
+speed = (number of minutes * speed) / (number of minutes * speed)
 
-where num is the speed in km/h.
+First, we need to fin
+[adapted]  repeated 8-grams 6%
+To find the speed in km/h, we'll first compute the speed in 45-minute based on the given probability of speed.
 
-So, we'll use the formula:
-
-speed =
+Speed = (45-20) / (45-20)
+  
 
 --- reasoning ---
 prompt: '<user>\nWrite a Python function that returns the largest number in a list.\n</user>\n<bot>\n<think>\n'
-[raw]  repeated 8-grams 5%
-Okay, let's see. I need to find the largest number in a list that contains a list. Let's call it list. Let's start by understanding the func
-[adapted]  repeated 8-grams 0%
-Okay, let's try to figure out how listy and compute any list. There's another way to do it, since we're doing these two changes. Let's break
+[raw]  repeated 8-grams 3%
+Okay, so I need to find the largest number in a list where each number is larger than a list of numbers. Let's see. For example, if I have a
+[adapted]  repeated 8-grams 3%
+Okay, so I need to find the largest number in a list. Let's see. Hmm, let's break it down.
+
+First, I need to understand what's being asked. 
 
 --- wikipedia ---
 prompt: '== History ==\nThe [[Roman Empire]] was '
-[raw]  repeated 8-grams 26%
-founde17 years old.  The [[Roman Empire]] was founded in [[1908]] by [[Roman Empire|Roman]] [[Empire]] in [[1908]].  The [[Roman Empire|Roma
-[adapted]  repeated 8-grams 36%
-founde17,023 km/hr.  There was nothing to do.
-*[[Alexandria]] was founded in [[1905]].
-*[[Alexandria]] was founded in [[1905]].
-*[[Alexandri
+[raw]  repeated 8-grams 36%
+founded in [[1970]] and was the first [[Roman Empire]] to be founded in [[1970]]. The [[Roman Empire]] was founded in [[1970]] and was found
+[adapted]  repeated 8-grams 17%
+founded in [[1970]], and therefore was the [[Roman Empire]]. There was nothing like that of [[Roman Empire]].
+
+The [[Roman Empire]] was foun
 
 --- chess ---
 prompt: '<g>1700 1-0 1. e4 e5 2. '
-[raw]  repeated 8-grams 0%   18 legal moves, then Qxa1
-Nf3 Nc6 3. Bc4 Nf6 4. Ng5 d5 5. exd5 Nxd5 6. Qf3 Qxg5 7. Bxd5 Qe7 8. Nc3 Nd4 9. Qd1 Nxc2+ 10. Kf1 Nxa1 11. Qxa1 Be6 12. Nd5 Bxd5 13. Bxd5 c6
-[adapted]  repeated 8-grams 0%   10 legal moves, then Nc1
-Nf3 d6 3. Bc4 h6 4. d3 Nf6 5. O-O Be7 6. h3 O-O 7. Nc1 a6 8. Be3 b5 9. a3 Be6 10. Nd2 c5 11. Ndf3 Nc6 12. Bxe6 fxe6 13. Nh2 Qd7 14. Ng4 Rf7 
+[raw]  repeated 8-grams 0%   19 legal moves, then Bg4
+Nf3 Nc6 3. Bc4 Nf6 4. Ng5 d5 5. exd5 Nxd5 6. Nxf7 Kxf7 7. Qf3+ Ke6 8. Nc3 Nd4 9. Qd3 Nxc2+ 10. Qxc2 Bd6 11. O-O Bg4 12. Qe2 Rf8 13. Qe4 Bf5 
+[adapted]  repeated 8-grams 0%   7 legal moves, then O-O-O
+Nf3 d6 3. Bc4 Nf6 4. d3 Be7 5. Nc3 O-O-O 6. Bg5 h6 7. Bxf7 Rhxf8 8. Nd2 Bg4 9. f3 Bh5 10. Qe2 Nbd7 11. O-O-O Nb6 12. Kb1 Nfd7 13. g4 Bg6 14.
 
 --- self-knowledge ---
 prompt: '<user>\nhow do you decide which experts to use?\n</user>\n<bot>\n'
-[raw]  repeated 8-grams 1%
-A small term pushes routing to spread across the experts on the card rather than piling onto a few, so that one expert does not absorb every
-[adapted]  repeated 8-grams 1%
-A small term pushes routing to spread across the experts on the card rather than piling onto a few, so that one expert does not absorb every
+[raw]  repeated 8-grams 0%
+The text votes. On the first pass of a forward every character ranks all 397 experts and asks for its top 8, each request weighted by how su
+[adapted]  repeated 8-grams 0%
+The text votes. On the first pass of a forward every character ranks all 397 experts and asks for its top 8, each request weighted by how su
 ```
 
 </details>
@@ -145,7 +150,7 @@ Every language model you can actually own today is a model somebody else trained
 Three constraints shape everything else in the design:
 
 - **It has to fit on 8 GB.** Not with quantisation - training needs gradients and optimiser state, which is roughly three times the weights again. So the weights live on disk and only the experts the current forward uses are on the card.
-- **It has to not forget.** A model that learns continually and overwrites itself is worse than one that does not learn at all.
+- **It has to avoid catastrophic forgetting.** It learns from everything it reads, so new material must not overwrite what it already knows completely.
 - **It has to be able to read anything.** The alphabet is the 256 byte values, so there is no tokenizer to fit and no data type that needs a new vocabulary.
 
 The model is genuinely yours: trained on your hardware, on your data, that keeps learning from every conversation you have with it, and that nobody else can take it away or switch it off. 
@@ -169,7 +174,7 @@ Three distinct blocks, up to 26 block-applications per character.
 
 ![how the model processes one character](assets/shape.gif)
 
-**This is the architecture assembling itself, one character at a time**, captured from the live model - nothing here is drawn by hand.
+**This is the architecture assembling itself, one character at a time**, captured from the live model.
 
 Each tile on the left is one expert; colour is expert identity and stays the same for the whole clip. A **row** is one application of the recurrent block, and the eight tiles in it are the eight experts that row actually ran. The stack grows downward as the model keeps going, and the amber line is where halting stopped it - **the grey rows below are computation the model declined to spend.**
 
@@ -221,7 +226,7 @@ Three rules the project holds to:
 
 The pool grows when it is short of capacity and shrinks when parts of it stop being asked for.
 
-New experts are added on speculation, at a small gate so they change almost nothing, and kept only if something goes on asking for them. A new expert is built by **recombination** - whole hidden units taken from several existing experts - because a clone of one parent is not novel enough to be worth routing to, and a random expert computes nothing worth routing to. What works is novelty assembled from trained parts. Its router row is its parents' rows averaged, weighted by how many units each gave, so it starts out scoring every character with the same weighted average of its parents' scores - and since nothing has used it yet, the balance term pulls its row up from the first training forward after its birth, until texts start admitting it.
+New experts are added on speculation, at a small gate so they change almost nothing, and kept only if something goes on asking for them. A new expert is built by **recombination** - whole hidden units taken from several existing experts - because a clone of one parent is not novel enough to be worth routing to, and a random expert computes nothing worth routing to. Its router row is its parents' rows averaged, weighted by how many units each gave, so it starts out scoring every character with the same weighted average of its parents' scores - and since nothing has used it yet, the balance term pulls its row up from the first training forward after its birth, until texts start admitting it.
 
 Growth is refused unless every brake agrees:
 
@@ -231,7 +236,7 @@ Growth is refused unless every brake agrees:
 - **fits** - not too many experts are already inside their trial
 - **honest** - train and held-out have not separated
 
-**Dead means unaddressed.** Both the growth brake and the pruner read how long it has been since a forward last admitted an expert, and never its gate: being used is being alive. This is the single most useful finding in the repository: the gate is not merely uninformative here, it is anti-predictive. The smallest gates belong to the *busiest* experts - one that behaves as a sink, chosen constantly and contributing little per character, reads as dead on a gate test, while a high-gate expert nothing has asked for in a long time reads as alive.
+**Dead means unaddressed.** Both the growth brake and the pruner read how long it has been since a forward last admitted an expert, and never its gate. The gate is not merely uninformative here, it is anti-predictive: the smallest gates belong to the *busiest* experts - one that behaves as a sink, chosen constantly and contributing little per character, reads as dead on a gate test, while a high-gate expert nothing has asked for in a long time reads as alive.
 
 A new expert is safe for a full survival window no matter what, so it cannot be judged before it has had a chance to be chosen. When the model grows an expert a new file appears; when it prunes one, that file is deleted. 
 
@@ -254,7 +259,7 @@ The fourth column is the exchange rate: nats gained on the new domain for every 
 
 ![Reading a new domain under three configurations](assets/mitigations.png)
 
-**This is the measurement the whole design rests on.** Panel A is what happened to the **eight subjects the model did not read** - zero means nothing was forgotten. Two configurations climb to +1.27 nats, which is the model losing most of what it knew. The third, at a trunk learning rate one tenth of the experts', reaches **+0.13 after more than a million characters of a single unfamiliar domain**.
+Panel A is what happened to the **eight subjects the model did not read** - zero means nothing was forgotten. Two configurations climb to +1.27 nats, which is the model losing most of what it knew. The third, at a trunk learning rate one tenth of the experts', reaches **+0.13 after more than a million characters of a single unfamiliar domain**.
 
 Panel B: **what it learned while it was there**. The mitigated configuration is not trading plasticity for retention - it learns PG19 *faster* than either unmitigated arm, **-0.4216 nats against -0.3106 and -0.2909**, while forgetting ten times less. Slowing the trunk does not slow learning. It accelerates it, because the trunk stops being dragged around by every passage and the experts are free to specialise.
 
@@ -291,14 +296,14 @@ Two readings matter here:
 
 **What that same read looks like from the inside.** This is the working configuration - trunk at 0.1x - during the 1,048,576-character PG19 read. On the left, every subject against where it started. PG19 drops away from the pack; the eight withheld subjects drift up together, and the ones that drift most are **chat, stories and reasoning** - the prose-like lanes, nearest to Victorian novels. Chess and arithmetic barely move, at +0.009 and +0.043. The damage lands where the representations overlap, which is what the routing story predicts.
 
-The right panel is why the damage is bounded at all. Over the whole read only **44 of 174 experts received any gradient** - 75% of the model was structurally untouched, because routing never selected it. This is the pool doing exactly what a pool is for: confining an update to the part of the model that the text actually addressed.
+The right panel is why the damage is bounded at all. Over the whole read only **44 of 174 experts received any gradient** - 75% of the model was structurally untouched, because routing never selected it: the pool confines an update to the part of the model that the text actually addressed.
 
-**The learning rate is not scheduled.** A cosine schedule asserts that the run ends, which for a model that reads continually is false. Instead a controller watches held-out loss and moves the rate in both directions: while held-out improves the rate creeps up, when held-out measurably gets worse it comes down, and a confirmed jump in held-out steps it back up. A single broken evaluation, or rounds with nothing read between them, do not count as evidence. 
+**The learning rate is not scheduled.** A cosine schedule asserts that the run ends, which for a model that reads continually is false. Instead a controller nudges the rate at every held-out evaluation, by an amount set by how clearly held-out is still improving - read off two exponentially weighted fits of held-out against time, one remembering about 66 evaluations and one about 12. Unless the improvement is clear, the rate eases down a fraction of a percent at a time: on a plateau about 0.2% an evaluation, a tenth or less in six hours, never more than 0.4% at once and never below 1% of the base rate. Clear improvement holds it up and can raise it by at most 0.08% an evaluation, and a confirmed jump in held-out, which means the material changed, doubles it. Easing is the resting posture because on this run a lower rate was measured to help on a plateau: from the same weights, the same 3M characters read at a third of the rate came out ahead on every held-out check and in every subject. Three things are not evidence: a reading that does not hold at the next check (this run's spikes are single readings 0.01 to 0.02 above their neighbours), an evaluation with nothing read since the last, and the step a restart makes in held-out, which is measured on the first five readings after it and taken out, so a changed setting is neither progress nor harm.
 
 <details>
 <summary><b>Replicate this measurement yourself</b> - the probe, the results, and the weights it was measured on</summary>
 
-The claim above is a measurement, and a measurement you cannot repeat is an assertion. The probe, all four arms and the figures ship in [`replication/`](replication/).
+The probe, all four arms and the figures ship in [`replication/`](replication/).
 
 **Weights for the checkpoint every number above was measured on:**
 
@@ -337,8 +342,6 @@ Set `--trunk-lr-mult 1.0` for the unmitigated arm, add `--no-swap` to freeze the
 
 ## Reading your own files
 
-This is the shortest path to a model that knows something you care about.
-
 ```bash
 python3 train.py read ~/notes                     # a dry read - nothing kept
 python3 train.py read ~/src ~/docs --passes 3 --save
@@ -355,34 +358,36 @@ It is the same path training uses: same chunking, same cache, same gradient step
 | `--lr` | default 5e-5, below a training run: reading should adjust the model, not overwrite it |
 | `--mix ""` | skip the before/after scoring |
 
-Two defaults worth knowing. **Nothing is saved without `--save`**, so a read is a dry run until you decide otherwise. And it scores the held-out mixture before and after, then says plainly if reading your files cost the model ground elsewhere - the forgetting question measured per-read rather than assumed away.
+Two defaults worth knowing. **Nothing is saved without `--save`**, so a read is a dry run until you decide otherwise. And it scores the held-out mixture before and after, then says plainly if reading your files cost the model ground elsewhere.
 
 ## Benchmarks
 
-The numbers below are for tracking purposes and move as the run continues. Held-out loss is reported with its standard error, and the size of the evaluation is what sets that error - a difference smaller than it is the instrument rather than a result.
+The numbers below are for tracking purposes and move as the run continues. Held-out loss is reported with its standard error, and the size of the evaluation is what sets that error - a difference smaller than it is noise.
+
+Held-out is read as whole blocks of 4,096 characters spread evenly over everything each subject holds in `data/val`, the same blocks every time, and a block scores exactly what it would if its file were read from the top. Each round's check reads 8 blocks of each subject, and a few blocks sit a little above or below the whole set, so every session starts with a 30-block evaluation and reports each of its checks at that level: what the check reads, plus the difference the two had at the start. Checks logged before this were measured slightly wrong: they read only the first 30,720 characters of each subject's files, which put the overall held-out a little higher than it should have been - by 0.011 when the change was made - and the subjects at different values. The graphs and these figures show them adjusted by the difference measured at the change, subject by subject; the log keeps them as they were measured.
 
 There is a second variance underneath these figures. The same configuration run twice lands about 0.014 apart, because the expert dispatch is not deterministic on CUDA. **Treat about 0.03 as the threshold for a real difference**, not the error bar printed beside one score.
 
 <!-- auto:benchmarks -->
-**Where the model is** (1,535.0M characters read, 395 experts):
+**Where the model is** (2,309.6M characters read, 340 experts; held-out measured on the model as it stands, on 30 blocks of 4,096 characters spread over all of each subject):
 
 | | nats/char | bits/byte |
 |---|---|---|
-| **held-out, all 8 subjects** | **0.6379** ± 0.0287 | **0.9203** |
-| train | 0.5267 | 0.7599 |
+| **held-out, all 8 subjects** | **0.5976** ± 0.0137 | **0.8622** |
+| train | 0.5247 | 0.7570 |
 
 **Held-out loss per subject:**
 
 | Subject | nats/char | bits/byte |
 |---|---|---|
-| `chess` | 0.406 | 0.586 |
-| `stories` | 0.420 | 0.606 |
-| `code` | 0.534 | 0.770 |
-| `reasoning` | 0.552 | 0.796 |
-| `chat` | 0.617 | 0.890 |
-| `arithmetic` | 0.621 | 0.896 |
-| `chat_hermes` | 0.906 | 1.307 |
-| `wikipedia` | 1.047 | 1.511 |
+| `chess` | 0.383 | 0.553 |
+| `stories` | 0.485 | 0.700 |
+| `code` | 0.513 | 0.740 |
+| `chat` | 0.518 | 0.747 |
+| `reasoning` | 0.557 | 0.804 |
+| `arithmetic` | 0.610 | 0.880 |
+| `chat_hermes` | 0.744 | 1.073 |
+| `wikipedia` | 0.970 | 1.399 |
 <!-- /auto:benchmarks -->
 
 ### Data Scaling
@@ -392,18 +397,18 @@ There is a second variance underneath these figures. The same configuration run 
 
 Every point on this chart is a **bits-per-byte on the PG19 test split** - one held-out set, so the comparison is direct. This model scores **2.091 BPB** over the whole split (100 books, 41,289,001 bytes) at a context of 4,096, against its own mixture's 0.94. PG19 is out of distribution for it: it was trained on a corpus assembled for this project and has read no Victorian novels, so much of that gap is subject matter rather than capability.
 
-**The results so far are promising.** The red line is the fitted power law on this model's own held-out, `L ∝ D^-0.223` with R² 0.98 over every point past the warmup - between Kaplan's 0.095 and Chinchilla's 0.28, and it has held for more than a decade of data. How steep it looks depends on where the fit starts, and the band on the chart spans that range rather than pretending to one number.
+The red line is the fitted power law on this model's own held-out, `L ∝ D^-0.203` with R² 0.97 over every point past the warmup - between Kaplan's 0.095 and Chinchilla's 0.28, and it has held for more than a decade of data. How steep it looks depends on where the fit starts, and the band on the chart spans that range.
 
-Read straight off that trend, on this model's own mixture. It has read 1.53B characters so far, in about 18 days of running. The days below assume the pace of the last 8 hours of it: 1,234 characters a second on the wall clock, held-out checks and rounds of samples included, because the reading waits for them.
+Read straight off that trend, on this model's own mixture. It has read 2.31B characters so far, in about 25 days of running. The days below assume the pace of the last 4 hours of it: 1,183 characters a second on the wall clock, held-out checks and rounds of samples included, because the reading waits for them.
 
-| held-out | total data read | further reading | days from here at ~1,234 char/s |
+| held-out | total data read | further reading | days from here at ~1,183 char/s |
 |---|---|---|---|
-| 0.80 BPB | 2.88B | +1.35B | ~13 |
-| **0.64 BPB** | 7.88B | +6.34B | **~60** |
+| 0.80 BPB | 3.34B | +1.03B | ~10 |
+| **0.67 BPB** | 8.04B | +5.73B | **~56** |
 
-The first one is days of reading on one laptop GPU, and it sits inside a single pass of the 7.88B-character corpus.
+The first one is days of reading on one laptop GPU, and it sits inside a single pass of the 8.04B-character corpus.
 
-The right panel shows which subjects are still moving. reasoning, stories, code, chat are the steep ones; arithmetic and wikipedia have the shallowest slopes, which is the honest counterweight - the expensive domains are not the fastest ones.
+The right panel shows which subjects are still moving. chat, reasoning, code, stories are the steep ones; arithmetic and wikipedia have the shallowest slopes.
 <!-- /auto:scaling -->
 
 ## GPU support
@@ -544,17 +549,17 @@ Byte level - vocabulary 265: the 256 byte values plus 9 structural markers (`<th
 | paging | 32 experts resident on the card; the rest live on disk |
 
 <!-- auto:params -->
-The parameter count moves, because the pool grows and prunes itself while training. `python3 -m minagi.store weights` prints what it is now. At step 750,109:
+The parameter count moves, because the pool grows and prunes itself while training. `python3 -m minagi.store weights` prints what it is now. At step 1,128,086:
 
 ```
 core        8.27M  embeddings, attention, norms, adapter, halting head
-routers     0.20M  one row per expert at each call site, depth embedding, gates
-experts  1242.6M   395 x 3.15M each  (3 x 512 x 2048)
+routers     0.17M  one row per expert at each call site, depth embedding, gates
+experts  1069.5M   340 x 3.15M each  (3 x 512 x 2048)
 ----------------------
-total    1251.0M
+total    1078.0M
 ```
 
-**VRAM is set by the card's 32 slots, not by the pool.** Only 32 experts are resident at a time - about 109M parameters of the 1251M - which is why the pool can keep growing on an 8 GB card. Per byte the model activates about **345M** parameters - two prelude blocks, then attention and top-8 of the resident experts on each recurrent step, counted at the 12.8 steps training samples its depth around (a character may take up to 24) - so by the 6ND rule it costs the same per byte as a dense 345M byte-level transformer, not a 1251M one. That is the figure the scaling chart in Benchmarks is drawn against.
+**VRAM is set by the card's 32 slots, not by the pool.** Only 32 experts are resident at a time - about 109M parameters of the 1078M - which is why the pool can keep growing on an 8 GB card. Per byte the model activates about **345M** parameters - two prelude blocks, then attention and top-8 of the resident experts on each recurrent step, counted at the 12.8 steps training samples its depth around (a character may take up to 24) - so by the 6ND rule it costs the same per byte as a dense 345M byte-level transformer, not a 1078M one. That is the figure the scaling chart in Benchmarks is drawn against.
 <!-- /auto:params -->
 
 ## AI usage
@@ -576,18 +581,47 @@ The parts the model is built out of:
 [FlashAttention](https://arxiv.org/abs/2205.14135) - Dao et al., 2022. Reached through PyTorch's `scaled_dot_product_attention`.  
 [Decoupled Weight Decay Regularization](https://arxiv.org/abs/1711.05101) - Loshchilov & Hutter, 2017. AdamW.  
 [Training Deep Nets with Sublinear Memory Cost](https://arxiv.org/abs/1604.06174) - Chen et al., 2016. Gradient checkpointing, which on 8 GB is not optional.  
-[Block-Recurrent Transformers](https://arxiv.org/abs/2203.07852) - Hutchins et al., 2022. Carrying a recurrent state across blocks, which is the shape any continuity beyond the attention window has to take here.
+[Block-Recurrent Transformers](https://arxiv.org/abs/2203.07852) - Hutchins et al., 2022. Carrying a recurrent state across blocks.
 
-[ZeRO-Offload](https://arxiv.org/abs/2101.06840) - Ren et al., 2021, and [ZeRO-Infinity](https://arxiv.org/abs/2104.07857) - Rajbhandari et al., 2021. Training a model larger than the card it sits on is not a new capability.  
-[Dynamic Mixture of Experts Against Severe Distribution Shifts](https://arxiv.org/abs/2511.18987) - Kim et al., 2025. Adds experts to a live MoE, and reports the failure this project spent a week fixing.
+[ZeRO-Offload](https://arxiv.org/abs/2101.06840) - Ren et al., 2021, and [ZeRO-Infinity](https://arxiv.org/abs/2104.07857) - Rajbhandari et al., 2021. Training a model larger than the GPU's memory, by offloading to CPU memory and disk.  
+[Dynamic Mixture of Experts Against Severe Distribution Shifts](https://arxiv.org/abs/2511.18987) - Kim et al., 2025. Adds experts to a mixture of experts while it trains, which is how this model's pool grows.
 
-[Training Compute-Optimal Large Language Models](https://arxiv.org/abs/2203.15556) - Hoffmann et al., 2022. Chinchilla, and the ratio any efficiency claim has to be tested against.  
+[Training Compute-Optimal Large Language Models](https://arxiv.org/abs/2203.15556) - Hoffmann et al., 2022. Chinchilla: the compute-optimal balance of parameters and training data.  
 [The Pile](https://arxiv.org/abs/2101.00027) - Gao et al., 2020. Bits per UTF-8 byte, chosen there for invariance to tokenisation.  
 [Transformer-XL](https://arxiv.org/abs/1901.02860) - Dai et al., 2019, and [Compressive Transformers](https://arxiv.org/abs/1911.05507) - Rae et al., 2019. The character-level benchmarks to aim at.  
 [An Empirical Model of Large-Batch Training](https://arxiv.org/abs/1812.06162) - McCandlish et al., 2018. The gradient noise scale.  
-[The AdEMAMix Optimizer](https://arxiv.org/abs/2409.03137) - Pagliardini et al., 2024. Implemented for the trunk and available, though at the paper's settings it hurt this model and it is not the default.  
+[The AdEMAMix Optimizer](https://arxiv.org/abs/2409.03137) - Pagliardini et al., 2024. Tried as the trunk's optimiser; at the paper's settings AdamW did better here, so it was removed.  
+[A Contrastive Framework for Neural Text Generation](https://arxiv.org/abs/2202.06417) — Su et al., 2022. Contrastive search, implemented as an alternative decoder. The default path does not use it, but the idea that degeneration is a property of the decoding rule rather than of the weights is what led to the adaptation trace that replaced it.  
+[Muon](https://kellerjordan.github.io/posts/muon/) — Keller Jordan, 2024. Orthogonalised momentum. Not implemented, but it is the reason the trunk's optimiser is treated as a separate question from the pool's at all.  
+
+[TinyLlama: An Open-Source Small Language Model](https://arxiv.org/abs/2401.02385) — Zhang et al., 2024. 1.1B parameters on three trillion tokens, sixteen A100s for ninety days. The closest published analogue to a small team training a small model from scratch.  
+[MEGABYTE: Predicting Million-byte Sequences with Multiscale Transformers](https://arxiv.org/abs/2305.07185) — Yu et al., 2023. 1.000 bits per byte on PG19 after reading 80 billion bytes, and one of the published byte-level points on the scaling chart.  
+[MambaByte: Token-free Selective State Space Model](https://arxiv.org/abs/2401.13660) — Wang et al., 2024. 0.930 bits per byte on PG19 after 30 billion bytes; the closest match on the chart, at about the same compute per byte.  
+[General-purpose, long-context autoregressive modeling with Perceiver AR](https://arxiv.org/abs/2202.07765) — Hawthorne et al., 2022. 1.104 bits per byte on PG19, the third published point.  
+[Gemma 3 Technical Report](https://arxiv.org/abs/2503.19786) — Gemma Team, 2025. The 1B model reads two trillion tokens and holds a 32k context.  
+[SmolLM2: When Smol Goes Big](https://arxiv.org/abs/2502.02737) — Allal et al., 2025. 1.7B on eleven trillion tokens, with a detailed account of the data work.  
+[Pythia: A Suite for Analyzing Large Language Models Across Training and Scaling](https://arxiv.org/abs/2304.01373) — Biderman et al., 2023. Publishes the GPU-hours per model size: 4,830 A100-hours for the 1B.  
+[Llama 3.2 model card](https://github.com/meta-llama/llama-models/blob/main/models/llama3_2/MODEL_CARD.md) — Meta, 2024. 370k H100-hours for the 1B, though it is pruned and distilled from larger models rather than trained from scratch, so it is not a like-for-like number.  
+[Qwen3.5-0.8B](https://huggingface.co/Qwen/Qwen3.5-0.8B) — Qwen Team, 2026. Smaller than this model and holds a 262k context, by making three quarters of its layers linear-attention.  
+
+
+[Transformer-XL: Attentive Language Models Beyond a Fixed-Length Context](https://arxiv.org/abs/1901.02860) — Dai et al., 2019. 0.99 bits per character on enwik8 and 1.08 on text8, from 277M parameters.  
+[Compressive Transformers for Long-Range Sequence Modelling](https://arxiv.org/abs/1911.05507) — Rae et al., 2019. 0.97 on enwik8; the next marker after Transformer-XL. It is also the paper that introduced PG19, the out-of-distribution test used here.  
+[Transformer Math 101](https://blog.eleuther.ai/transformer-math/) — Anthony, Biderman & Schoelkopf, 2023. C = 6ND, and the bytes-per-parameter arithmetic that says what a training checkpoint must weigh.  
+[The Smol Training Playbook](https://huggingfacetb-smol-training-playbook.hf.space/) — Hugging Face, 2025. Reports 161,280 GPU-hours of ablations against 276,480 for the main run.  
+[lm-evaluation-harness](https://github.com/EleutherAI/lm-evaluation-harness) — EleutherAI. The standard suite, not used here yet: at this scale HellaSwag, ARC and the rest score at chance.  
+[Why Does the Effective Context Length of LLMs Fall Short?](https://arxiv.org/abs/2410.18745) — An et al., 2024. Models use less of their context than they are given, which is why the 4,096-character window here is reported as a setting rather than as a capability.  
 
 The corpus: [TinyStories](https://huggingface.co/datasets/roneneldan/TinyStories), [OpenHermes-2.5](https://huggingface.co/datasets/teknium/OpenHermes-2.5), [OpenThoughts-114k](https://huggingface.co/datasets/open-thoughts/OpenThoughts-114k) and [the Lichess open database](https://database.lichess.org/). Wikipedia and the source-code portion come from public dumps and public repositories.
+
+<details>
+<summary><b>Some additional sources that might affected the decisions in this project</b></summary>
+
+[Infinite test-time scaling | Talk at MIT](https://www.youtube.com/watch?v=CKdlVoMhHwU) - mostly about prefix-sliding approach for "infinite" context. While interesting, I am pretty sure it is vastly inferior to "context with full attention for immediate memory + carry latent for short-term memory (basically LSTM) + weights update for long-term memory" approach.  
+[SGD for batch-1 training](https://www.reddit.com/r/LocalLLaMA/comments/1wm1gab/comment/pbr1kpf/?utm_source=share&utm_medium=web3x&utm_name=web3xcss&utm_term=1&utm_content=share_button) - proposal for using SGD for batch-1 training, as it might be just as affective as AdamW at this bach size. This will allow to cut VRAM utilization almost in half giving spare memory for something else. Definitely going to be tested in the future.  
+
+</details>
+
 
 ## Citation
 

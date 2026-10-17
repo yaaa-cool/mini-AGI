@@ -394,6 +394,22 @@ class PagedPool(nn.Module):
                              persistent=False)
         self.usage_steps = 1000.0        # how far back `recent` looks
         self._trains = False             # whether this forward trains
+        # EACH EXPERT'S OWN LEARNING RATE, as a multiple of the main one the
+        # plasticity controller sets - only while `newborn_rate` is on
+        # (training.newborn_lr). An expert the pool had before keeps 1.0. One
+        # born under the rule starts at 1 / (the main rate at its birth),
+        # which is the full base rate, and how far above the main rate it is
+        # - log(rate) - halves with every `rate_half` steps it is trained, so
+        # it joins the main rate as it matures and one that sits idle keeps
+        # what it has. Its weights, its gate and its router rows all move at
+        # it: see _rate_before and _rate_after.
+        self.register_buffer("rate", torch.ones(n_experts), persistent=False)
+        self.register_buffer("trained", torch.zeros(n_experts),
+                             persistent=False)  # steps since relax_rates()
+        self.newborn_rate = False
+        self.rate_half = 15000.0
+        self.main_scale = 1.0            # the main rate's factor, set per step
+        self._rate_snap = None
         # THE BALANCE TERM - a term in the loss, `balance` its weight, that
         # charges the router for the probability it puts on each expert in
         # proportion to that expert's share of recent admissions. Computed by
@@ -929,6 +945,79 @@ class PagedPool(nn.Module):
             self._own = [e >= 0 for e in self.slots]
             self._own_in = [weakref.ref(o["exp_avg"]) for o in sts]
 
+    # -- each expert's own rate - see `rate` --------------------------------
+    def rates(self):
+        """Each expert's rate as a step applies it: never above the base."""
+        cap = 1.0 / max(float(self.main_scale), 1e-9)
+        return self.rate[:self._n].clamp(max=cap)
+
+    @torch.no_grad()
+    def _rate_before(self, *_):
+        """What every faster expert's parameters were before the step."""
+        self._rate_snap = None
+        if not self.newborn_rate:
+            return
+        rc = self.rates().cpu()              # one wait for the card a step
+        fast = (rc > 1.0).nonzero().flatten()
+        if not fast.numel():
+            return
+        dev = self.gate.device
+        snap = {"fast": fast.to(dev), "r": rc[fast].to(dev, self.gate.dtype)}
+        snap["gate"] = self.gate.data[snap["fast"]].clone()
+        snap["rows"] = [s.router.weight.data[snap["fast"]].clone()
+                        for s in self._sites]
+        held = [s for s, i in enumerate(self.slots)
+                if i >= 0 and float(rc[i]) > 1.0]
+        if held:
+            si = torch.tensor(held, device=self.w1.device)
+            rs = torch.tensor([float(rc[self.slots[s]]) for s in held],
+                              device=self.w1.device)
+            snap["slots"] = (si, rs, [p.data[si].clone()
+                                      for p in (self.w1, self.w3, self.w2)])
+        self._rate_snap = snap
+
+    @torch.no_grad()
+    def _rate_after(self, *_):
+        """
+        Stretch the step every faster expert just took by its rate. AdamW
+        moves a parameter by lr times things lr does not change - the ratio of
+        its moments, and its decay - so scaling the change it just made is
+        exactly a step at rate x lr, for its weights, its gate and its router
+        rows alike, and nothing else in the pool is touched.
+        """
+        on = [i for i in self.slots if i >= 0]
+        if on:
+            self.trained.index_add_(
+                0, torch.tensor(on, device=self.trained.device),
+                torch.ones(len(on), device=self.trained.device))
+        s, self._rate_snap = self._rate_snap, None
+        if s is None:
+            return
+        fast, r = s["fast"], s["r"]
+        g = self.gate.data
+        g[fast] = s["gate"] + r * (g[fast] - s["gate"])
+        for site, old in zip(self._sites, s["rows"]):
+            w = site.router.weight.data
+            w[fast] = old + r[:, None].to(w.dtype) * (w[fast] - old)
+        if "slots" in s:
+            si, rs, olds = s["slots"]
+            for p, old in zip((self.w1, self.w3, self.w2), olds):
+                k = rs.view((-1,) + (1,) * (p.dim() - 1)).to(p.dtype)
+                p.data[si] = old + k * (p.data[si] - old)
+
+    @torch.no_grad()
+    def relax_rates(self):
+        """
+        Bring every expert's rate toward the main one by how much it has been
+        trained since the last call: log(rate) halves every `rate_half` steps
+        of its own training. One that was not trained keeps its rate.
+        """
+        n = self._n
+        far = torch.log(self.rate[:n].clamp_min(1.0))
+        self.rate[:n] = torch.exp(far * torch.pow(0.5, self.trained[:n]
+                                                  / self.rate_half))
+        self.trained.zero_()
+
     # -- growing and pruning ----------------------------------------------
     @torch.no_grad()
     def add_experts(self, k, seed_from=None, device=None, step=0,
@@ -1045,6 +1134,11 @@ class PagedPool(nn.Module):
         # a newborn has been used by nothing, so the balance term pulls its row
         # up from the first training forward after its birth
         self.recent = grow_vec(self.recent, 0.0)
+        # under the newborn rule it starts at the base rate, however far the
+        # main one has come down - see `rate`
+        self.rate = grow_vec(self.rate, 1.0 / max(float(self.main_scale), 1e-9)
+                             if self.newborn_rate else 1.0)
+        self.trained = grow_vec(self.trained, 0.0)
 
         # the routers keep one row per expert, so they grow too - each new
         # row the unit-weighted average of its parents' rows (see above)
@@ -1128,6 +1222,32 @@ class PagedPool(nn.Module):
             # longer what this rule is about, and the last expert anything
             # asked for is the least bad thing to be left holding.
             keep = [int(self.last_seen[:self._n].argmax())]
+        return self._keep_only(keep)
+
+    def drop_quietest(self, n, step=None, survival=0):
+        """
+        Delete the n experts with the smallest |gate| that are not on the card.
+        A one-off, not a rule: measured on 16 Oct, barring the 150 quietest of
+        397 from the card left held-out where it was, and 200 cost 0.01.
+
+        An expert inside its first `survival` steps is left alone, as prune()
+        leaves it: a newborn's gate starts at birth_gate and has had no time
+        to say anything, so it would otherwise be the first to go.
+        Returns the dropped experts' (uid, |gate|) pairs.
+        """
+        g = self.gate.data[:self._n].abs()
+        on = set(self.slots)
+        if step is not None and survival:
+            on |= {i for i in range(self._n)
+                   if step - float(self.born[i]) < survival}
+        quiet = [int(i) for i in torch.argsort(g) if int(i) not in on][:n]
+        out = [(int(self.uid[i]), round(float(g[i]), 4)) for i in quiet]
+        drop = set(quiet)
+        self._keep_only([i for i in range(self._n) if i not in drop])
+        return out
+
+    def _keep_only(self, keep):
+        """Delete every expert not in `keep`, and every row it had."""
         gone = self._n - len(keep)
         kept = set(keep)
 
@@ -1150,7 +1270,7 @@ class PagedPool(nn.Module):
         self.gate = nn.Parameter(self.gate.data[idx].clone())
         self._carry(opt, old_gate, self.gate, idx=idx)
         for nm in ("use", "age", "born", "gate_seen", "last_seen", "ever",
-                   "admits", "uid", "recent"):
+                   "admits", "uid", "recent", "rate", "trained"):
             setattr(self, nm, getattr(self, nm)[idx].clone())
         # Give every router a NEW parameter rather than reshaping the one it
         # has. Autograd sizes a gradient from the tensor it saved, so shrinking
@@ -1214,6 +1334,7 @@ class PagedPool(nn.Module):
                 "born": [float(v) for v in self.born],
                 "last_seen": [float(v) for v in self.last_seen],
                 "recent": [round(float(v), 6) for v in self.recent],
+                "rate": [round(float(v), 6) for v in self.rate],
                 "ever": [bool(v) for v in self.ever],
                 "uid": [int(v) for v in self.uid],
                 "next_uid": int(self.next_uid),
@@ -1224,7 +1345,7 @@ class PagedPool(nn.Module):
         if not t:
             return
         for nm in ("use", "admits", "born", "last_seen",
-                   "gate_seen", "recent"):
+                   "gate_seen", "recent", "rate"):
             v = t.get(nm)
             if not v:
                 continue
@@ -1262,7 +1383,9 @@ class PagedPool(nn.Module):
         self._opt = opt
         if opt is not None and id(opt) not in self._hooked:
             opt.register_step_pre_hook(self._own_moments)
+            opt.register_step_pre_hook(self._rate_before)
             opt.register_step_post_hook(self._count_step)
+            opt.register_step_post_hook(self._rate_after)
             self._hooked.add(id(opt))
 
     def attach_sites(self, model):

@@ -42,11 +42,17 @@ class GradSNR:
         # out - which recurrence depth sampling makes routine: a step sampled
         # at depth 1 forces the halt, and the halting head receives nothing -
         # and the running mean then no longer matched it.
+        params = list(params)
         if all(p.grad is None for p in params):
             return None
         flat = torch.cat([(p.grad if p.grad is not None
                            else torch.zeros_like(p)).detach().float().reshape(-1)
                           for p in params])
+        if self.m is not None and self.m.numel() != flat.numel():
+            # the set itself changed shape: a meter starts again, it does not
+            # stop the run it is only reporting on
+            self.m, self.sq, self.n = None, 0.0, 0
+            self._sums.clear()
         self.m = flat.clone() if self.m is None else \
             self.m.mul_(self.beta).add_(flat, alpha=1 - self.beta)
         self._sums.append((flat * flat).sum())

@@ -102,11 +102,19 @@ python3 train.py read data/replay --weights-dir $W/weights-persona \
 
 - **lr.** With a config, `read` defaults to `training.lr` (3e-4), not the 5e-5
   the README names. Start an add-on read at 1e-4 (unmeasured starting point);
-  `minagi/plasticity.py` then moves it with held-out: it holds while held-out
-  is flat, rises while it improves (never above `--lr`), and comes down only
-  when held-out measurably worsens twice running, to a floor of x0.05.
-  Evaluations under 32 optimiser steps apart do not count, so a very short
-  read barely moves it. `trunk_lr_mult` (0.1) keeps the shared trunk slow.
+  `minagi/plasticity.py` then moves it with held-out: at every check it eases
+  the rate down unless held-out is clearly improving (0.4% at most a check),
+  rises only on clear improvement (never above `--lr`), to a floor of x0.01.
+  `--lr-reset` puts the rate back at x1. Evaluations under 32 optimiser steps
+  apart do not count, so a very short read barely moves it. `trunk_lr_mult`
+  (0.1) keeps the shared trunk slow. Under `training.newborn_lr` (on in both
+  configs; `--no-newborn-lr` turns it off) an expert born during the read
+  starts at the full `--lr` and comes down to the main rate as it trains.
+- **Held-out.** `before`/`after` and every check read whole blocks spread over
+  each held-out subject, and checks report at the start's level. These
+  numbers are not comparable with ones logged before upstream 574a397, which
+  read from the top of each subject; the sample log's session banner also
+  prints the old from-the-top figure.
 - **Pass.** persona held-out falls. Each of the other eight stays within the
   +/- that `read` prints. A lane that rises past that is forgetting: lower
   `--lr`, or give persona a smaller share.

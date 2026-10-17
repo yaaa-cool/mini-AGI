@@ -13,11 +13,15 @@ import re
 
 import json
 import os
+import sys
 
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from minagi import heldout                                  # noqa: E402
 
 # The header gained the corpus total partway through the project, so both
 # shapes appear in one file and the older half is the early history.
@@ -73,10 +77,26 @@ def _dead_pct(r):
 
 
 def parse(path):
+    """Every entry in a sample log, oldest first, with held-out on one level.
+
+    Checks moved to blocks spread over the whole held-out set partway through
+    the run (minagi/heldout.py). An entry from before that read the top of
+    each subject, and sits away from the level checks report at now by what
+    the first spread session start measured: it is moved by that much,
+    subject by subject, and marked `shifted`. The larger evaluation a session
+    ended on before then was a third measurement, neither the checks' nor
+    the new level, and is left out - only a check writes the controller's
+    evidence line, so once a log has one, an entry before the change without
+    it is one of those. After the change that evaluation is the level itself
+    and stays.
+    """
     txt = open(path, errors="ignore").read()
-    rows = []
-    for m in HEAD.finditer(txt):
-        blk = txt[m.end():m.end() + 700]
+    first = heldout.first_shift(txt)
+    rows, had_check = [], False
+    heads = list(HEAD.finditer(txt))
+    for i, m in enumerate(heads):
+        end = heads[i + 1].start() if i + 1 < len(heads) else len(txt)
+        blk = txt[m.end():min(m.end() + 700, end)]
         r = {"step": int(m.group(1).replace(",", "")),
              "chars": float(m.group(2)),
              "corpus": (float(m.group(3).replace(",", ""))
@@ -106,11 +126,23 @@ def parse(path):
             parts = g.group(1).split()
             r["dom"] = {parts[i]: float(parts[i + 1])
                         for i in range(0, len(parts) - 1, 2)}
+        if first is None or m.start() < first[0]:
+            check = heldout.is_check(blk)
+            if had_check and not check:
+                continue
+            had_check = had_check or check
+            if first is not None and r.get("val") is not None:
+                r["val"], dom = heldout.moved(r["val"], r.get("dom"),
+                                              first[1])
+                if dom is not None:
+                    r["dom"] = dom
+                r["shifted"] = True
         rows.append(r)
     corpus = next((r["corpus"] for r in reversed(rows) if r["corpus"]), None)
     for r in rows:
         r["corpus"] = r["corpus"] or corpus
     return rows
+
 
 
 def main():
@@ -297,11 +329,10 @@ def main():
                    for r in rows], float)
     if np.isfinite(ev).any():
         # what the controller can prove, so the rate is readable even when it
-        # is not moving: above +2 it eases up, below +0.5 it eases down
+        # is not moving: above T_MID (2.2) it eases up, below it down
         pe = p.twinx()
         pe.plot(x, ev, lw=1.0, color="#984ea3", alpha=.75)
-        pe.axhline(2.0, color="#984ea3", ls=":", lw=.8)
-        pe.axhline(0.5, color="#984ea3", ls=":", lw=.8)
+        pe.axhline(2.2, color="#984ea3", ls=":", lw=.8)
         pe.set_ylabel("evidence t", color="#984ea3", fontsize=9)
         pe.tick_params(axis="y", labelcolor="#984ea3", labelsize=8)
         pe.spines["right"].set_position(("outward", 38))

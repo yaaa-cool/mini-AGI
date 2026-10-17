@@ -75,7 +75,7 @@ pool:
                           # holding weights, gradient and Adam's moments
   ram_cache: 96           # RAM - experts kept in system memory
 
-  capacity_factor: 1.5    # most of a batch one expert may take, as a multiple
+  capacity_factor: 0      # most of a batch one expert may take, as a multiple
                           # of its fair share; the rest is dropped. 0 removes
 
   # THE BALANCE TERM - how the whole pool gets used. Left alone the router
@@ -93,7 +93,7 @@ pool:
   # row at the usual pace whatever the weight. 0 turns it off. In a 15-minute
   # test 0.01 took the experts in use on held-out from 59 to 114, at a cost of
   # 0.023 in held-out loss over those minutes.
-  balance: 2.5e-4
+  balance: 3.5e-5
 
   # THE TEMPERATURE OF EXPERT SELECTION - which experts compute a character,
   # NOT which character comes out. Characters are always chosen greedily; any
@@ -121,13 +121,20 @@ training:
                           # and the expert files stay fp32
 
   # THE LEARNING RATE IS NOT SCHEDULED. minagi/plasticity.py watches held-out
-  # and moves the rate in both directions: up while held-out improves, down
-  # when it measurably gets worse, and back up when held-out jumps and stays
-  # there. The floor (x0.05 of lr) is in plasticity.py.
+  # and nudges the rate at every check: down unless held-out is clearly
+  # improving, 0.4% at most at a time - on a plateau a tenth or less in six
+  # hours - and up only on clear improvement or new material. The floor
+  # (x0.01 of lr) is in plasticity.py.
   chunk: 2048             # characters between steps within the window
   lr: 3.0e-4
   trunk_lr_mult: 0.1      # the trunk is shared by every domain and is where
                           # forgetting happens; it learns slower on purpose
+  newborn_lr: true        # a newborn expert learns at the full lr - weights,
+                          # gate and router row - and its own rate comes down
+                          # to the main one as it is trained
+  newborn_half: 15000     # steps of an expert's own training that halve how
+                          # far above the main rate it is, in log terms: a
+                          # week at a 4% share, so it converges over weeks
   weight_decay: 0.1
   clip: 1.0
 

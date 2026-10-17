@@ -191,20 +191,57 @@ def _self_facts():
     f["expert_params_m"] = f["expert_params"] / 1e6
     f["expert_mb"] = f["expert_params"] * 4 / 1e6
     f["expert_mb_paged"] = f["expert_params"] * 4 * 3 / 1e6
+    # the file: fp32 weights and two bf16 moments, the size growth's disk
+    # ceiling is counted in
+    f["expert_file_mb"] = f["expert_params"] * (4 + 2 + 2) / 1e6
+    f["max_disk_gb"] = float(_g(c, "growth.max_disk_gb", 10.0) or 0.0)
+    f["disk_experts"] = int(f["max_disk_gb"] * 1e3 / f["expert_file_mb"])
+    # DISTINCT blocks, counted from the shape rather than taken from
+    # video/facts.py, whose 6 described a model with three recurrent blocks
+    # and a coda
+    f["unique_blocks"] = f["n_prelude"] + f["n_recur"] + f["n_coda"]
+    f["recur_blocks"] = ("one block" if f["n_recur"] == 1
+                         else f"{f['n_recur']} blocks")
+    try:
+        from minagi.plasticity import Plasticity
+        f["lr_floor"] = Plasticity.FLOOR
+    except Exception:
+        f["lr_floor"] = 0.05
+    # the lanes reading rotates between, named from the training folder
+    train = str(_g(c, "data.train", "data/train"))
+    try:
+        lanes = sorted(d for d in os.listdir(train)
+                       if os.path.isdir(os.path.join(train, d)))
+    except OSError:
+        lanes = []
+    lanes = lanes or ["arithmetic", "chat", "chess", "code", "reasoning",
+                      "self-knowledge", "stories", "wikipedia"]
+    f["n_lanes"] = len(lanes)
+    f["subjects"] = ", ".join(lanes[:-1]) + " and " + lanes[-1]
+    # how far one visit walks through a file: data.passage is the setting in
+    # effect (visit_chars above is the retired min_visit_chunks rule)
+    f["passage"] = int(str(_g(c, "data.passage", 65536)).replace("_", ""))
     return f
 
 
 _F = _self_facts()
 
-def _load_self_knowledge():
+
+def _load_self_knowledge_variants():
     """
-    What the model says about itself, kept as text rather than as code.
+    What the model says about itself, kept as text rather than as code:
+    (questions, answers) for every topic, `answers` being every wording.
 
     It lives in self_knowledge.yaml so it can be read, checked and corrected
     without touching a program - which matters, because a description that
     lives in source goes stale quietly. Every number in it is a placeholder
     filled from the model that exists, so an answer cannot claim a size or a
     setting the model does not have.
+
+    `say` is one answer or a list of wordings of the same answer. Several
+    wordings of one fact teach the fact; one wording repeated hundreds of
+    times teaches the string, and a string is what the model then recites
+    whatever it was asked.
     """
     import os
     import yaml
@@ -217,10 +254,18 @@ def _load_self_knowledge():
     out = []
     for item in doc:
         ask = item.get("ask") or []
-        say = (item.get("say") or "").strip()
-        if ask and say:
-            out.append((ask, " ".join(say.split())))
+        say = item.get("say") or []
+        says = [" ".join(str(s).split()) for s in
+                ([say] if isinstance(say, str) else say)]
+        says = [s for s in says if s]
+        if ask and says:
+            out.append((ask, says))
     return out
+
+
+def _load_self_knowledge():
+    """(questions, answer) per topic, the answer its first wording."""
+    return [(ask, says[0]) for ask, says in _load_self_knowledge_variants()]
 
 
 SELF_FROM_CODE = [

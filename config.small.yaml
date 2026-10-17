@@ -194,14 +194,20 @@ training:
                           # computes bf16 natively
 
   # THE LEARNING RATE IS NOT SCHEDULED. minagi/plasticity.py watches held-out
-  # and moves the rate in both directions: up while held-out improves, down
-  # when it measurably gets worse, and back up when held-out jumps and stays
-  # there. The floor (x0.05 of lr) is in plasticity.py.
+  # and nudges the rate at every check: down unless held-out is clearly
+  # improving, 0.4% at most at a time - on a plateau a tenth or less in six
+  # hours - and up only on clear improvement or new material. The floor
+  # (x0.01 of lr) is in plasticity.py.
   chunk: 2048            # characters between steps within the window. Keep
                           # it <= context_start (bug #18)
   lr: 3.0e-4
   trunk_lr_mult: 0.1      # the trunk is shared by every domain and is where
                           # forgetting happens; it learns slower on purpose
+  newborn_lr: true        # a newborn expert learns at the full lr - weights,
+                          # gate and router row - and its own rate comes down
+                          # to the main one as it is trained
+  newborn_half: 15000     # steps of an expert's own training that halve how
+                          # far above the main rate it is, in log terms
   weight_decay: 0.1
   clip: 1.0
 
