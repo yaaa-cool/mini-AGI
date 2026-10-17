@@ -12,6 +12,11 @@ Experiment config: `config.small.yaml` at the repo root; code reads
 Session setup: `ssh train@10.0.1.19`, `cd ~/train/mini-AGI && . .venv/bin/activate`,
 `W=/mnt/data/runs/mini-agi/<run>` (one folder per run).
 
+From the Mac, `tools/rig/rig.py` drives these steps (sync, smoke, train,
+status, eval, fetch; usage in `tools/rig/README.md`). `docs/COOKBOOK.md` walks
+through each one with the CLI command, what it runs on the rig, and the W4
+figures as worked examples.
+
 ## 1. Corpus (CPU)
 
 ```bash
@@ -202,6 +207,8 @@ The cycle is: fetch upstream, merge, test, push to origin.
 
 1. `scripts/sync-upstream.sh` (or `git fetch upstream && git merge upstream/main`).
 2. Run the tests on the rig CPU: `CUDA_VISIBLE_DEVICES="" .venv/bin/python -m pytest -q tests`.
+   `python3 tools/rig/rig.py sync --test` copies the code to the rig and runs
+   them (`docs/COOKBOOK.md` §0.3).
 3. `git push origin main`, a plain fast-forward push. Never `--force`, and push
    no other branches or tags except a `wave-N-done` tag. No PRs to volotat
    unless the owner decides to contribute a patch.
