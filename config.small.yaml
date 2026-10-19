@@ -149,8 +149,11 @@ pool:
                           # SMALL: 32 -> 16, half the pool as in the reference
   ram_cache: 96           # RAM - experts kept in system memory
 
-  capacity_factor: 1.5    # most of a batch one expert may take, as a multiple
+  capacity_factor: 0      # most of a batch one expert may take, as a multiple
                           # of its fair share; the rest is dropped. 0 removes
+                          # the bound (upstream 574a397; owner 2026-10-19).
+                          # Unbounded, MINAGI_DISPATCH=padded pads every slot
+                          # to the busiest expert - watch vram on padded runs
 
   # THE BALANCE TERM - how the whole pool gets used. Left alone the router
   # keeps choosing the same experts: reading held-out on its own it put 59 of
@@ -167,7 +170,7 @@ pool:
   # row at the usual pace whatever the weight. 0 turns it off. In a 15-minute
   # test 0.01 took the experts in use on held-out from 59 to 114, at a cost of
   # 0.023 in held-out loss over those minutes.
-  balance: 2.5e-4
+  balance: 3.5e-5         # upstream 574a397 (was 2.5e-4; owner 2026-10-19)
 
   # THE TEMPERATURE OF EXPERT SELECTION - which experts compute a character,
   # NOT which character comes out. Characters are always chosen greedily; any
