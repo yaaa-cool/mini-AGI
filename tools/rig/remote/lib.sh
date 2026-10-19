@@ -10,31 +10,89 @@ RUNS=${RIG_RUNS:-/mnt/data/runs/mini-agi}
 PY=${RIG_PY:-/home/train/train/mini-AGI/.venv/bin/python}
 RIG=$RUNS/.rig
 
-# gpu_free [max_temp] [max_used_mib] : the check at the top of every GPU job.
-# Fails if something holds VRAM (strata-swift holds about 11.6 GB), any
-# compute app runs, or the card is already at max_temp.
+# The rig has two cards and runs one job per card: every check, guard and
+# launch names its card by nvidia-smi index (PCI bus order, which
+# CUDA_DEVICE_ORDER=PCI_BUS_ID makes torch's order too).
+
+# card_apps UUID : the compute apps on that card, "pid, name, used" per line.
+card_apps() {
+  nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_memory --format=csv,noheader \
+    | awk -F', *' -v u="$1" '$1 == u {print $2 ", " $3 ", " $4}'
+}
+
+# pinned_runs CARD : the live guarded runs launched on that card ($W/gpu), so a
+# run still loading its model already holds its card.
+pinned_runs() {
+  local d
+  live_runs | while read -r d; do
+    [ "$(cat "$d/gpu" 2>/dev/null)" = "$1" ] && echo "$d"
+  done
+}
+
+# gpu_free CARD [max_temp] [max_used_mib] : the check before every GPU job, on
+# one card. Fails if something holds its VRAM (strata-swift holds about
+# 11.6 GB), a compute app or a live guarded run is on it, or it is already at
+# max_temp. The other card does not count.
 gpu_free() {
-  local max_t=${1:-85} max_mib=${2:-1024} row used temp apps bad=0
-  row=$(nvidia-smi --query-gpu=memory.used,temperature.gpu --format=csv,noheader,nounits) \
-    || { echo "GPU CHECK FAILED: nvidia-smi did not answer"; return 1; }
-  used=$(echo "$row" | head -1 | cut -d, -f1 | tr -d ' ')
-  temp=$(echo "$row" | head -1 | cut -d, -f2 | tr -d ' ')
-  apps=$(nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader)
+  local card=$1 max_t=${2:-85} max_mib=${3:-1024} row uuid used temp apps runs bad=0
+  row=$(nvidia-smi -i "$card" --query-gpu=uuid,memory.used,temperature.gpu --format=csv,noheader,nounits 2>&1) \
+    || { echo "GPU $card CHECK FAILED: nvidia-smi -i $card did not answer: $row"; return 1; }
+  IFS=, read -r uuid used temp <<< "$row"
+  uuid=${uuid// /}; used=${used// /}; temp=${temp// /}
+  apps=$(card_apps "$uuid")
+  runs=$(pinned_runs "$card")
   if [ "$used" -gt "$max_mib" ]; then
-    echo "GPU BUSY: ${used} MiB of VRAM in use (limit ${max_mib}); strata-swift? (rig.py swift stop)"
+    echo "GPU $card BUSY: ${used} MiB of VRAM in use (limit ${max_mib}); strata-swift? (rig.py swift stop)"
     bad=1
   fi
   if [ -n "$apps" ]; then
-    echo "GPU BUSY: compute apps running:"
+    echo "GPU $card BUSY: compute apps running:"
     echo "$apps" | sed 's/^/  /'
     bad=1
   fi
-  if [ "$temp" -ge "$max_t" ]; then
-    echo "GPU HOT: ${temp} C >= ${max_t} C"
+  if [ -n "$runs" ]; then
+    echo "GPU $card BUSY: live guarded runs on it:"
+    echo "$runs" | sed 's/^/  /'
     bad=1
   fi
-  [ "$bad" = 0 ] && echo "GPU free: ${used} MiB used, ${temp} C, no compute apps"
+  if [ "$temp" -ge "$max_t" ]; then
+    echo "GPU $card HOT: ${temp} C >= ${max_t} C"
+    bad=1
+  fi
+  [ "$bad" = 0 ] && echo "GPU $card free: ${used} MiB used, ${temp} C, no compute apps"
   return "$bad"
+}
+
+# pick_gpus SPEC [all] : sets GPUS to the cards a job runs on. SPEC is a card
+# index or a comma list (each must be free), or auto: the first free card, or
+# with "all" every free card. Prints each card's check; fails if a named card
+# is not free or auto finds none.
+pick_gpus() {
+  local spec=$1 want=${2:-one} idx c out bad=0
+  GPUS=()
+  if [ "$spec" != auto ]; then
+    IFS=, read -ra GPUS <<< "$spec"
+    for c in "${GPUS[@]}"; do
+      gpu_free "$c" || bad=1
+    done
+    return "$bad"
+  fi
+  idx=$(nvidia-smi --query-gpu=index --format=csv,noheader) \
+    || { echo "GPU CHECK FAILED: nvidia-smi did not answer"; return 1; }
+  for c in ${idx// /}; do
+    if out=$(gpu_free "$c"); then
+      echo "$out"
+      GPUS+=("$c")
+      [ "$want" = all ] || break
+    else
+      echo "$out"
+    fi
+  done
+  if [ "${#GPUS[@]}" = 0 ]; then
+    echo "NO FREE GPU: every card is busy or hot (rig.py gpu-check shows who holds them)"
+    return 1
+  fi
+  echo "auto: card ${GPUS[*]}"
 }
 
 # live_runs : the guarded run dirs (runs and eval shards) whose process is
@@ -49,9 +107,10 @@ live_runs() {
   done
 }
 
-# d_model FILE : the line holding the d_model key, not a comment that names it.
+# d_model FILE : the line holding the d_model key, not a comment that names it,
+# without its trailing comment.
 d_model() {
-  grep -m1 -E '^[[:space:]]*d_model:' "$1" | sed 's/^ *//'
+  grep -m1 -E '^[[:space:]]*d_model:' "$1" | sed -e 's/^ *//' -e 's/[[:space:]]*#.*$//'
 }
 
 # active_config : the config this rig is meant to run, as recorded by the
@@ -96,7 +155,9 @@ select_config() {
     if [ -n "$live" ]; then
       echo "REFUSED: config.yaml would change to $want while guarded runs are live:"
       echo "$live" | sed 's/^/  /'
-      echo "(config.yaml is the config and some keys are re-read mid-run; wait for them to end)"
+      echo "(config.yaml is the config and some keys are re-read mid-run; wait for them to end."
+      echo " Both cards run from this one checkout: a second run side by side on the other"
+      echo " card must use the active config, $(active_config 2>/dev/null || echo unknown))"
       return 3
     fi
     cp "$src" "$REPO/config.yaml"
@@ -113,18 +174,22 @@ fresh_dir() {
   fi
 }
 
-# launch_guarded RUN_DIR CMD... : the exact command into $W/cmd, the config it
-# runs with into $W/config.yaml, then CMD nohup'd under guarded.sh from the
-# current directory. MINAGI_DISPATCH must already be exported.
+# launch_guarded RUN_DIR CARD CMD... : the card into $W/gpu, the exact command
+# into $W/cmd, the config it runs with into $W/config.yaml, then CMD nohup'd
+# under guarded.sh from the current directory, pinned to CARD (the job sees
+# only that card, as cuda:0). MINAGI_DISPATCH must already be exported.
 launch_guarded() {
-  local w=$1; shift
+  local w=$1 card=$2; shift 2
   mkdir -p "$w"
+  echo "$card" > "$w/gpu"
   cp "$REPO/config.yaml" "$w/config.yaml"
-  { echo "# $(date -Is) in $PWD"
-    printf 'MINAGI_DISPATCH=%s PYTHONUNBUFFERED=1' "$MINAGI_DISPATCH"
+  { echo "# $(date -Is) in $PWD, card $card"
+    printf 'CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=%s MINAGI_DISPATCH=%s PYTHONUNBUFFERED=1' \
+      "$card" "$MINAGI_DISPATCH"
     printf ' %q' "$@"
     echo; } > "$w/cmd"
-  PYTHONUNBUFFERED=1 nohup bash "$RIG/guarded.sh" "$w" "$@" < /dev/null > "$w/guard.out" 2>&1 &
+  CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=$card PYTHONUNBUFFERED=1 \
+    nohup bash "$RIG/guarded.sh" "$w" "$card" "$@" < /dev/null > "$w/guard.out" 2>&1 &
   sleep 2
-  echo "launched $w pid $(cat "$w/pid" 2>/dev/null)"
+  echo "launched $w on card $card, pid $(cat "$w/pid" 2>/dev/null)"
 }

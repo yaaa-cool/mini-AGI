@@ -6,13 +6,13 @@ case $1 in
   stop)
     sudo systemctl stop strata-swift && sleep 5
     echo "strata-swift: $(systemctl is-active strata-swift)"
-    nvidia-smi --query-gpu=memory.used,temperature.gpu --format=csv,noheader ;;
+    nvidia-smi --query-gpu=index,memory.used,temperature.gpu --format=csv,noheader ;;
   start)
     sudo systemctl start strata-swift && sleep 3
     echo "strata-swift: $(systemctl is-active strata-swift)" ;;
   status)
     echo "strata-swift: $(systemctl is-active strata-swift)"
-    nvidia-smi --query-gpu=memory.used,temperature.gpu --format=csv,noheader ;;
+    nvidia-smi --query-gpu=index,memory.used,temperature.gpu --format=csv,noheader ;;
   *)
     echo "usage: swift.sh stop|start|status"; exit 2 ;;
 esac

@@ -4,6 +4,12 @@
 W=$1
 [ -d "$W" ] || { echo "no run dir $W"; echo "state: missing"; exit 1; }
 echo "== $W"
+# the run's card (gpu.csv samples only that one), then every card's temp now:
+# the two share the case
+[ -f "$W/gpu" ] && echo "card: $(cat "$W/gpu")"
+NOW=$(nvidia-smi --query-gpu=index,temperature.gpu --format=csv,noheader,nounits 2>/dev/null \
+  | awk -F', *' '{printf "%scard %s %s C", s, $1, $2; s=", "}')
+[ -n "$NOW" ] && echo "now: $NOW"
 if [ -f "$W/gpu.csv" ]; then
   echo "== gpu ($(($(wc -l < "$W/gpu.csv") - 1)) samples, every 10 s; last:)"
   tail -1 "$W/gpu.csv"

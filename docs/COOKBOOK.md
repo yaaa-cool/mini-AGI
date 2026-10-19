@@ -24,12 +24,23 @@ Tags on each step:
 - **[GPU - owner release]**: loads a model on the GPU. It needs the owner's
   release for that specific run (RIG-TRAINING.md, top).
 
-Rig: `train@10.0.1.19`, RTX 3060 12 GB. Code lives in `~/train/mini-AGI`, an
+Rig: `train@10.0.1.19`, two RTX 3060 12 GB cards (nvidia-smi indexes 0 and
+1; W4 ran on a one-card rig). Code lives in `~/train/mini-AGI`, an
 rsync copy and not a git checkout, with the venv in `.venv`. Run dirs are
 `/mnt/data/runs/mini-agi/<name>` (`$RUNS` below; `--runs` changes it). The
 CLI's own scripts are uploaded to `$RUNS/.rig/` on every call, by rsync, so a
 script a live run is still reading is replaced by rename and not rewritten
 under it.
+
+One run per card (owner decision; train.py has one `--device` and no
+multi-GPU code). Every GPU job (smoke, train, eval gen) takes `--gpu N|auto`:
+`N` pins it to card N with `CUDA_DEVICE_ORDER=PCI_BUS_ID
+CUDA_VISIBLE_DEVICES=N`, so the job's `cuda:0` is that card; `auto`, the
+default, is the first free card, picked on the rig, and the job fails if none
+is free. Two jobs side by side are `--gpu 0` and `--gpu 1`. They share the
+one checkout and so the one `config.yaml`: the second must run with the
+active config (see "The config.yaml gotcha" in Gotchas). `eval gen --gpu
+0,1` spreads its jobs over both cards.
 
 Shorthand in the by-hand blocks and W4 worked examples below, as W4 used it
 on the rig (log in as `train@10.0.1.19`, then `cd ~/train/mini-AGI`):
@@ -42,33 +53,39 @@ W=$R/<run name>                            # the run dir
 ```
 
 What a run dir holds: `guarded.sh` writes `read.log` (training output),
-`gpu.csv` (nvidia-smi every 10 s), `pid`, `start`, `end` (the exit code and
-time, written when the run exits) and `guard.log` (only if the 85 C guard
-fired). Training adds `samples.txt`, `expert_rates.jsonl` and `weights/`.
-`launch_guarded` in `tools/rig/remote/lib.sh` adds `cmd` (the exact command,
-with its `MINAGI_DISPATCH`) and `config.yaml` (the config it ran with).
+`gpu.csv` (the run's own card, nvidia-smi every 10 s; W4's columns plus the
+card index last), `pid`, `start`, `end` (the exit code and time, written when
+the run exits) and `guard.log` (only if the 85 C guard fired on the run's
+card). Training adds `samples.txt`, `expert_rates.jsonl` and `weights/`.
+`launch_guarded` in `tools/rig/remote/lib.sh` adds `gpu` (the card), `cmd`
+(the exact command, with its `CUDA_VISIBLE_DEVICES` and `MINAGI_DISPATCH`)
+and `config.yaml` (the config it ran with).
 
 ---
 
 ## 0. Prereqs
 
-### 0.1 Is the GPU free? [read-only]
+### 0.1 Is a GPU free? [read-only]
 
 ```bash
 python3 tools/rig/rig.py gpu-check
+python3 tools/rig/rig.py gpu-check --gpu 1          # card 1 only
 python3 tools/rig/rig.py gpu-check --max-temp 85 --max-used-mib 1024   # the defaults, spelled out
 ```
 
-Underneath: `tools/rig/remote/gpu-check.sh` prints the hostname, the
-nvidia-smi summary (name, temperature, SM clock, memory, power limit,
-sw_thermal), the compute apps holding VRAM, whether strata-swift is active,
-the active run config with its `d_model` line, and any live guarded runs. It
-then runs `gpu_free` (`lib.sh`), the same check every GPU job runs first, and
-exits 1 if more than 1024 MiB of VRAM is in use, any compute app is running,
-or the card is already at 85 C.
+Underneath: `tools/rig/remote/gpu-check.sh` prints the hostname, whether
+strata-swift is active, the active run config with its `d_model` value, and
+any live guarded runs with their cards. Then, per card (both, or the one
+`--gpu` names): the nvidia-smi summary (index, name, temperature, SM clock,
+memory, power limit, sw_thermal), the compute apps on that card, and
+`gpu_free CARD` (`lib.sh`), the same check every GPU job runs first. A card is
+busy if more than 1024 MiB of its VRAM is in use, a compute app runs on it, a
+live guarded run was launched on it, or it is already at 85 C; the other card
+does not count. The last line is `free cards: ...`; the exit is 0 if a card
+checked is free and 1 if none is.
 
-What to look at: about 11.6 GB used means strata-swift (the llama server on
-:8080) is loaded, so stop it first (0.2). W4 figure: idle after the cooling
+What to look at: about 11.6 GB used on a card means strata-swift (the llama
+server on :8080) is loaded there; that card is busy until you stop it (0.2). W4 figure: idle after the cooling
 service read 46 C at SM 405 MHz. Leave the 100 W power limit alone.
 
 ### 0.2 Stop and start strata-swift [owner release]
@@ -167,11 +184,15 @@ config.small follows upstream is not decided.
 
 There is nothing to install by hand. Every call uploads `tools/rig/remote/` to
 `$RUNS/.rig/` and runs `ssh train@10.0.1.19 bash $RUNS/.rig/<script> <args>`.
-`guarded.sh` is W4's script with the 85 C limit named once (`GUARD_C`): it
-runs the command with output to `$W/read.log`, samples nvidia-smi every 10 s
-into `$W/gpu.csv`, and sends SIGTERM at 85 C or above. W4's originals
-(`guarded.sh`, `status.sh`, `genC.sh`, `smoke.sh`, `runA.sh`, `runB2.sh` and
-the rest) are kept verbatim in `tools/rig/w4-scripts/` as source material.
+`guarded.sh <run_dir> <card> <cmd...>` is W4's script with the 85 C limit
+named once (`GUARD_C`) and pinned to the run's card: it runs the command with
+output to `$W/read.log`, samples `nvidia-smi -i <card>` every 10 s into
+`$W/gpu.csv`, and sends SIGTERM when that card is at 85 C or above. Only the
+run's own card trips it; the other card has its own run and guard. W4's
+originals (`guarded.sh`, `status.sh`, `genC.sh`, `smoke.sh`, `runA.sh`,
+`runB2.sh` and the rest) are kept verbatim in `tools/rig/w4-scripts/` as
+source material. Do not reuse W4's `guarded.sh` on the two-card rig: it
+queries every card, gets two temperatures, and its guard never fires.
 
 ### 0.6 Chat-only lane folders (one-time, already on the rig) [owner release]
 
@@ -197,14 +218,17 @@ python3 tools/rig/rig.py swift stop
 python3 tools/rig/rig.py smoke --name w5-smoke
 ```
 
-Defaults: `--config small`, `--dispatch padded`, `--minutes 15`, data
-`$RUNS/w4-lanes/chat-train`, held-out `$RUNS/w4-lanes/chat-val`. `smoke` waits
-for the run to end (about minutes + 2) and prints the gate; `--no-wait`
-returns after the launch. `--dispatch exact` reproduces W4's dispatch.
+Defaults: `--config small`, `--dispatch padded`, `--gpu auto`, `--minutes 15`,
+data `$RUNS/w4-lanes/chat-train`, held-out `$RUNS/w4-lanes/chat-val`. `smoke`
+waits for the run to end (about minutes + 2) and prints the gate; `--no-wait`
+returns after the launch. `--dispatch exact` reproduces W4's dispatch. Each
+card gates on its own: smoke `--gpu 0` and `--gpu 1` before trusting both.
 
-Underneath: `tools/rig/remote/smoke.sh` runs `gpu_free`, refuses an existing
-run dir (`fresh_dir`), selects the config, exports `MINAGI_DISPATCH`, and
-launches under `guarded.sh`:
+Underneath: `tools/rig/remote/smoke.sh` picks the card (`pick_gpus` in
+`lib.sh`: `--gpu N` must pass `gpu_free N`, `auto` takes the first card that
+does), refuses an existing run dir (`fresh_dir`), selects the config, exports
+`MINAGI_DISPATCH`, and launches under `guarded.sh` with
+`CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=<card>`:
 
 ```bash
 $PY tools/device_check.py --window 2048 --chunk 2048 > $W/device_check.log 2>&1
@@ -239,9 +263,11 @@ went 5.52 to 2.66 nats in 15 min (old scale).
 python3 tools/rig/rig.py train --name w5-A --config small --data /mnt/data/runs/mini-agi/w4-lanes/chat-train --held-out /mnt/data/runs/mini-agi/w4-lanes/chat-val --minutes 180 --sample-every 10
 ```
 
-Underneath: `tools/rig/remote/train.sh` runs `gpu_free`, refuses an existing
-`$RUNS/w5-A`, selects config.small, exports `MINAGI_DISPATCH=padded`, and
-launches under `guarded.sh`:
+Underneath: `tools/rig/remote/train.sh` picks the card (`--gpu`, default
+`auto`: the first free one), refuses an existing `$RUNS/w5-A`, selects
+config.small, exports `MINAGI_DISPATCH=padded`, and launches under
+`guarded.sh` pinned to the card (`CUDA_DEVICE_ORDER=PCI_BUS_ID
+CUDA_VISIBLE_DEVICES=<card>`):
 
 ```bash
 train.py read /mnt/data/runs/mini-agi/w4-lanes/chat-train --save --weights-dir $RUNS/w5-A/weights --held-out /mnt/data/runs/mini-agi/w4-lanes/chat-val --sample-every 10 --sample-log $RUNS/w5-A/samples.txt --minutes 180
@@ -274,7 +300,8 @@ What to look at, in `read.log` order:
 
 W4 figures (exact dispatch, old held-out scale): 28.5M chars in 182 min,
 held-out chat 5.52 to 1.88. That was 4.8k char/s alone and about 3.3k while B
-ran alongside. It is not fluent, and that is expected. With padded, the perf
+ran alongside on the same card (W4's one-card rig; now B would go on the other
+card). It is not fluent, and that is expected. With padded, the perf
 wave measured about 7.2k char/s single-run, so expect about 1.5x the
 characters in the same 180 min, less whatever the newborn rule costs.
 
@@ -331,9 +358,10 @@ python3 tools/rig/rig.py train --name w5-B --config reference --from-weights aut
 To reproduce W4 exactly, add `--dispatch exact`. Padded was measured on
 config.small only; on the 209M reference model it is unmeasured.
 
-Underneath: `train.sh` runs `gpu_free`, refuses an existing `$RUNS/w5-B`,
-selects the reference config (refused only if that would change config.yaml
-while a guarded run is live), `cp -a`s
+Underneath: `train.sh` picks the card (`--gpu`, default the first free one),
+refuses an existing `$RUNS/w5-B`, selects the reference config (refused only
+if that would change config.yaml while a guarded run is live, so B can run
+beside A on the other card only if both use the same config), `cp -a`s
 `$RUNS/author/hf/weights` to `$RUNS/w5-B/weights` (`--from-weights` is
 relative to `$RUNS`), and launches:
 
@@ -386,16 +414,18 @@ python3 tools/rig/rig.py status w5-A --watch 300   # every 5 min until the run e
 python3 tools/rig/rig.py fetch w5-A                # logs back to runs/w5-A on the Mac
 ```
 
-Underneath: `tools/rig/remote/status.sh $RUNS/w5-A` prints the last gpu.csv
-row, then `maxT meanT meanSM minSM swThermalActive hwThermalActive`, guard
+Underneath: `tools/rig/remote/status.sh $RUNS/w5-A` prints the run's card
+(`$W/gpu`), a `now:` line with both cards' current temperatures (they share
+the case), the last gpu.csv row (gpu.csv samples only the run's card), then
+`maxT meanT meanSM minSM swThermalActive hwThermalActive`, guard
 hits, the latest speed, the gate lines from read.log, the held-out banner and
 the latest check (see below), the start time and ETA (from `--minutes` in
 `cmd`, or for a `--max-chars` run an estimate from the latest check's
 characters and reading rate), and a last line `state: running|ended|dead`.
 `--watch` repeats it until the state is no longer `running`, which replaces W4's `until ssh ...
 test -f end` loop. `fetch` copies `read.log`, `samples.txt`,
-`expert_rates.jsonl`, `gpu.csv`, `cmd`, `config.yaml`, `guard.log`, `start`,
-`end` and `device_check.log` with scp into `runs/<name>` of the checkout you
+`expert_rates.jsonl`, `gpu.csv`, `gpu`, `cmd`, `config.yaml`, `guard.log`,
+`start`, `end` and `device_check.log` with scp into `runs/<name>` of the checkout you
 run it from (`--dest` changes it); run it from the main checkout.
 
 By hand on the rig, W4's recorded greps are still useful:
@@ -474,19 +504,24 @@ python3 tools/rig/rig.py eval status --name w5-C                                
 ```
 
 Defaults: `--shards 3`, `--max-chars 800`, `--prompts $RUNS/heldout.jsonl`,
-`--dispatch padded`. Model weights are relative to `$RUNS`.
+`--dispatch padded`, `--gpu auto` (every free card). Model weights are
+relative to `$RUNS`. `--gpu 0,1` names the cards; each must be free.
 
 Underneath: `tools/rig/remote/eval-gen.sh` (W4's `genC.sh` for any number of
-models) runs one `gpu_free`, checks every weights dir exists, refuses any
+models) runs one GPU-free check per card (`pick_gpus ... all`), checks every
+weights dir exists, refuses any
 existing `gen-<NAME>-<k>` dir, splits the prompts into `$RUNS/w5-C/prompts.<k>.jsonl`
 once (and refuses a later call with a different shard count), then launches
 one guarded `tools/persona_generate.py --weights WD --prompts prompts.<k>.jsonl
---out replies.<NAME>.<k>.jsonl --max-chars 800` per model and shard. It does
+--out replies.<NAME>.<k>.jsonl --max-chars 800` per model and shard, the jobs
+round-robin over the cards (3 models x 3 shards on two cards: 5 on card 0, 4
+on card 1), each pinned to its card. It does
 not touch config.yaml: the model's shape comes from the manifest in the
 weights folder, and config.yaml only supplies defaults such as
 `training.precision` (W4 generated A with the reference config active and it
-worked). `tools/rig/remote/eval-status.sh` (W4's `genstat.sh`) prints the card,
-lines per shard, replies per file, guard hits and `shards ended: N of M`.
+worked). `tools/rig/remote/eval-status.sh` (W4's `genstat.sh`) prints both
+cards, lines per shard with its card, replies per file, guard hits and
+`shards ended: N of M`.
 
 Worked example (W4, recorded):
 
@@ -615,7 +650,9 @@ Gate (from samples.txt, `grep -A1 '^held-out loss'`, or `status`):
   the config, and some keys are re-read mid-run. Handled by the CLI:
   `select_config` refuses to change `config.yaml` while ANY guarded run is
   live, whatever keys differ (A and B in W4 ran side by side only because the
-  re-read keys agreed). Each run dir keeps the `config.yaml` it ran with, and
+  re-read keys agreed). Both cards run from the one checkout, so a second run
+  side by side on the other card must use the active config; the refusal says
+  so and names it. Each run dir keeps the `config.yaml` it ran with, and
   `gpu-check` prints the active one.
 - **A code rsync reset `config.yaml` to the reference config.** Handled by
   the CLI: `sync` excludes `config.yaml`, ships the Mac's copy to
@@ -632,19 +669,28 @@ Gate (from samples.txt, `grep -A1 '^held-out loss'`, or `status`):
   `smoke` and `train` always pass `--save`. Still true for a hand-run `read`.
 - **Unbounded runs.** New: `train` refuses to launch without `--minutes` or
   `--max-chars`, so nothing unattended reads the whole corpus by accident.
-- **Runs side by side share the GPU.** W4 figure: A dropped from 4.8k to 3.3k
-  char/s while B ran alongside. Through the CLI this no longer happens by
-  accident: every GPU job starts with `gpu_free`, which refuses while any
-  compute app runs.
+- **Runs side by side shared the GPU.** W4 figure (one-card rig): A dropped
+  from 4.8k to 3.3k char/s while B ran alongside on the same card. The rig now
+  has two cards and the CLI runs one job per card, which avoids that: every
+  GPU job is pinned to its card and starts with `gpu_free` on it, which
+  refuses a card with a compute app or a live guarded run on it, so two jobs
+  never land on one card by accident (`--gpu 0` and `--gpu 1`, or `auto` for
+  the next free one). Both cards still share the case and its cooling: one
+  card's heat raises the other's, so watch both temperatures (`status` prints
+  them on its `now:` line; each card's guard covers only its own run). Two
+  runs side by side also share one `config.yaml` (the gotcha above).
 - **Padded dispatch** is the default for every GPU job (owner decision);
   `--dispatch exact` opts out, and `cmd` records which. About 1.5x on
   config.small and statistically equivalent to exact (-0.35% loss, CI -1.6 to
   +0.9%), but ponder ran slightly higher at all 4 seeds, so keep an eye on
   it. Neither mode is bitwise reproducible on this card. Unmeasured on the
   reference model.
-- **Temperature guard.** `guarded.sh` sends SIGTERM at 85 C (`GUARD_C`), and
-  `gpu_free` refuses to start a job on a card already at `--max-temp`. A guard
-  hit shows in `status` as `guard hits: N`.
+- **Temperature guard.** `guarded.sh` sends SIGTERM when the run's own card
+  is at 85 C (`GUARD_C`), and `gpu_free` refuses to start a job on a card
+  already at `--max-temp`. A guard hit shows in `status` as `guard hits: N`.
+  W4's guard queried every card; on the two-card rig that query gives two
+  temperatures and the guard never fires, so it now asks for the run's card
+  only (`nvidia-smi -i`).
 - **strata-swift holds about 11.6 GB.** Handled: `swift stop|start` runs as
   `cc` with sudo, and `gpu_free` names Swift when VRAM is held. You still have
   to stop it before training and start it for the judge.

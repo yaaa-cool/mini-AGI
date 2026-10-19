@@ -1,14 +1,16 @@
 #!/bin/bash
-# eval-gen.sh <eval_dir> <shards> <max_chars> <prompts> <dispatch> NAME=WEIGHTS... :
+# eval-gen.sh <eval_dir> <shards> <max_chars> <prompts> <dispatch> <cards|auto> NAME=WEIGHTS... :
 # W4's genC.sh for any number of models - the prompts split into <shards>, one
 # guarded persona_generate.py per model and shard, all launched after one
-# GPU-free check. The weights' manifest sets the model's shape, so this does
-# not touch config.yaml (W4 generated A with the reference config active).
+# GPU-free check. <cards> is a comma list (auto: every free card); the jobs go
+# round-robin over them, each pinned to its card. The weights' manifest sets
+# the model's shape, so this does not touch config.yaml (W4 generated A with
+# the reference config active).
 # shellcheck source-path=SCRIPTDIR source=lib.sh
 . "$(dirname "$0")/lib.sh"
-E=$1; SHARDS=$2; MAXC=$3; PROMPTS=$4; DISPATCH=$5
-shift 5
-gpu_free || exit 1
+E=$1; SHARDS=$2; MAXC=$3; PROMPTS=$4; DISPATCH=$5; GPU=$6
+shift 6
+pick_gpus "$GPU" all || exit 1
 for m in "$@"; do
   NAME=${m%%=*}; WD=${m#*=}
   [ -d "$WD" ] || { echo "no weights at $WD for $NAME"; exit 1; }
@@ -27,10 +29,12 @@ fi
 wc -l "$E"/prompts.*.jsonl | tail -1
 cd "$REPO" || exit 1
 export MINAGI_DISPATCH=$DISPATCH
+j=0
 for m in "$@"; do
   NAME=${m%%=*}; WD=${m#*=}
   for k in $(seq 0 $((SHARDS - 1))); do
-    launch_guarded "$E/gen-$NAME-$k" "$PY" tools/persona_generate.py --weights "$WD" \
+    launch_guarded "$E/gen-$NAME-$k" "${GPUS[j % ${#GPUS[@]}]}" "$PY" tools/persona_generate.py --weights "$WD" \
       --prompts "$E/prompts.$k.jsonl" --out "$E/replies.$NAME.$k.jsonl" --max-chars "$MAXC"
+    j=$((j + 1))
   done
 done

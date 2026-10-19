@@ -3,11 +3,14 @@ scripts --dry-run prints for every subcommand, `bash -n` over the remote
 scripts, and lib.sh's config select run locally against a fake checkout."""
 
 import importlib.util
+import json
 import os
 import re
 import shlex
 import shutil
 import subprocess
+import sys
+import time
 import types
 from pathlib import Path
 
@@ -54,7 +57,9 @@ def test_remote_scripts_parse():
 
 
 def test_gpu_free_check_heads_every_gpu_job():
-    for name in ("smoke.sh", "train.sh", "eval-gen.sh"):
+    for name, check in (("smoke.sh", 'pick_gpus "$GPU" || exit 1'),
+                        ("train.sh", 'pick_gpus "$GPU" || exit 1'),
+                        ("eval-gen.sh", 'pick_gpus "$GPU" all || exit 1')):
         # the script's own top-level commands, past sourcing lib.sh, reading
         # the arguments and defining functions: the first is the check
         top, in_fn = [], False
@@ -66,7 +71,7 @@ def test_gpu_free_check_heads_every_gpu_job():
             elif line and not line[0].isspace() and not line.startswith("#"):
                 top.append(line)
         cmds = [c for c in top if not re.match(r"^(\. |shift|[A-Z_]+=)", c)]
-        assert cmds[0] == "gpu_free || exit 1", (name, cmds[0])
+        assert cmds[0] == check, (name, cmds[0])
 
 
 def test_guarded_runner_keeps_w4_behaviour():
@@ -82,10 +87,12 @@ def test_gpu_check(capsys):
     assert rc == 0
     cmds = commands(out)
     assert cmds[0].startswith("rsync -a ") and cmds[0].endswith(f"train@10.0.1.19:{RUNS}/.rig/")
-    assert f"bash {RUNS}/.rig/gpu-check.sh 85 1024" in cmds[1]
+    assert f"bash {RUNS}/.rig/gpu-check.sh all 85 1024" in cmds[1]
     assert "--query-compute-apps" in out and "systemctl is-active strata-swift" in out
     rc, out = dry(capsys, "gpu-check", "--max-temp", "80", "--max-used-mib", "2048")
-    assert "gpu-check.sh 80 2048" in out
+    assert "gpu-check.sh all 80 2048" in out
+    rc, out = dry(capsys, "gpu-check", "--gpu", "0")
+    assert "gpu-check.sh 0 85 1024" in out
 
 
 def test_swift(capsys):
@@ -126,7 +133,7 @@ def test_smoke(capsys):
     rc, out = dry(capsys, "smoke")
     assert rc == 0
     cmds = commands(out)
-    assert (f"smoke.sh {RUNS}/w5-smoke small padded 15 "
+    assert (f"smoke.sh {RUNS}/w5-smoke small padded auto 15 "
             f"{RUNS}/w4-lanes/chat-train {RUNS}/w4-lanes/chat-val") in cmds[1]
     assert 'RIG_REPO="$HOME"/train/mini-AGI' in cmds[1]
     assert "export MINAGI_DISPATCH=$DISPATCH" in out
@@ -137,7 +144,7 @@ def test_smoke(capsys):
     rc, out = dry(capsys, "smoke", "--name", "s2", "--dispatch", "exact",
                   "--minutes", "5", "--no-wait")
     cmds = commands(out)
-    assert f"smoke.sh {RUNS}/s2 small exact 5 " in cmds[-1]
+    assert f"smoke.sh {RUNS}/s2 small exact auto 5 " in cmds[-1]
     assert "wait.sh" not in " ".join(cmds)
 
 
@@ -153,7 +160,7 @@ def test_train(capsys):
     cmds = commands(out)
     W = f"{RUNS}/w5-persona"
     launch = next(c for c in cmds if "train.sh" in c)
-    assert (f"train.sh {W} small padded {RUNS}/w4-A/weights data/train persona:1,chat:1 "
+    assert (f"train.sh {W} small padded auto {RUNS}/w4-A/weights data/train persona:1,chat:1 "
             f"train.py read {W}/mix --save --weights-dir {W}/weights --held-out data/val "
             f"--sample-every 10 --sample-log {W}/samples.txt --minutes 180 --lr 3e-5 --lr-reset") in launch
     assert "--drop-quietest" not in out
@@ -171,7 +178,7 @@ def test_train_options(capsys):
                   "--no-newborn-lr", "--newborn-half", "8000", "--sample-every", "5")
     assert rc == 0
     launch = next(c for c in commands(out) if "train.sh" in c)
-    assert f"train.sh {RUNS}/t - exact - - - train.py read data/replay-chat " in launch
+    assert f"train.sh {RUNS}/t - exact auto - - - train.py read data/replay-chat " in launch
     assert "--max-chars 30e6" in launch and "--no-newborn-lr" in launch
     assert "--newborn-half 8000" in launch and "--sample-every 5" in launch
     assert "--minutes" not in launch and "--lr-reset" not in launch
@@ -220,12 +227,12 @@ def test_eval_gen(capsys):
                   "--model", "author=/mnt/data/runs/mini-agi/author/hf/weights")
     assert rc == 0
     cmd = commands(out)[-1]
-    assert (f"eval-gen.sh {RUNS}/w5-C 3 800 {RUNS}/heldout.jsonl padded "
+    assert (f"eval-gen.sh {RUNS}/w5-C 3 800 {RUNS}/heldout.jsonl padded auto "
             f"A={RUNS}/w4-A/weights author={RUNS}/author/hf/weights") in cmd
     assert "tools/persona_generate.py" in out and "gpu_free" in out
     rc, out = dry(capsys, "eval", "gen", "--name", "e", "--model", "B=x",
                   "--shards", "2", "--max-chars", "400", "--dispatch", "exact")
-    assert f"eval-gen.sh {RUNS}/e 2 400 {RUNS}/heldout.jsonl exact B={RUNS}/x" in out
+    assert f"eval-gen.sh {RUNS}/e 2 400 {RUNS}/heldout.jsonl exact auto B={RUNS}/x" in out
     with pytest.raises(SystemExit):
         rig.main(["--dry-run", "eval", "gen", "--name", "e", "--model", "noweights"])
 
@@ -290,7 +297,7 @@ def test_home_paths_reach_the_rig_expanded(capsys, tmp_path):
     rc, out = dry(capsys, "train", "--name", "t", "--data", "~/d", "--held-out", "~/v",
                   "--from-weights", "~/w", "--minutes", "5")
     launch = next(c for c in commands(out) if "train.sh" in c)
-    assert 'padded "$HOME"/w - - train.py read "$HOME"/d' in launch
+    assert 'padded auto "$HOME"/w - - train.py read "$HOME"/d' in launch
     assert '--held-out "$HOME"/v' in launch
     rc, out = dry(capsys, "eval", "gen", "--name", "e", "--model", "A=~/w")
     assert 'A="$HOME"/w' in commands(out)[-1]
@@ -426,3 +433,330 @@ def test_status_eta_for_max_chars(tmp_path):
     assert ("ETA ~2026-10-17T12:06:40+00:00 (an estimate: --max-chars 30e6, "
             "10.0M read at the last check, at its 5000 char/s") in r.stdout, r.stdout + r.stderr
     assert r.stdout.splitlines()[-1].startswith("state: dead")
+
+
+# ---- the two-card rig: a fake nvidia-smi first on PATH, the scripts run for real
+
+FAKE_NVIDIA_SMI = r'''
+import json, os, sys
+state = json.load(open(os.environ["FAKE_GPUS"]))
+units = {"clocks.sm": " MHz", "memory.used": " MiB", "memory.total": " MiB",
+         "power.limit": " W", "power.draw": " W", "utilization.gpu": " %",
+         "used_memory": " MiB"}
+card, rows, fields, fmt = None, None, [], ""
+args = iter(sys.argv[1:])
+for a in args:
+    if a == "-i":
+        card = next(args)
+    elif a.startswith("--query-gpu="):
+        fields, rows = a.split("=", 1)[1].split(","), state["gpus"]
+    elif a.startswith("--query-compute-apps="):
+        fields, rows = a.split("=", 1)[1].split(","), state["apps"]
+    elif a.startswith("--format="):
+        fmt = a
+if card is not None:
+    rows = [g for g in rows if str(g["index"]) == card]
+    if not rows:
+        print("No devices were found")
+        sys.exit(6)
+if "noheader" not in fmt:
+    print(", ".join(fields))
+for r in rows:
+    print(", ".join(f"{r[f]}{'' if 'nounits' in fmt else units.get(f, '')}" for f in fields))
+'''
+
+
+def set_cards(env, temps=(56, 50), used=(9, 1), apps=()):
+    """The fake cards' state; apps are (card, pid, name, MiB). Replaced whole,
+    so a script reading it mid-run never sees half a file."""
+    gpus = [{"index": i, "uuid": f"GPU-{i}a1b2", "name": "NVIDIA GeForce RTX 3060",
+             "timestamp": "2026/10/19 10:00:00.000", "temperature.gpu": t, "clocks.sm": 405,
+             "memory.used": u, "memory.total": 12288, "power.limit": "100.00",
+             "power.draw": "20.00", "utilization.gpu": 0,
+             "clocks_event_reasons.sw_thermal_slowdown": "Not Active",
+             "clocks_event_reasons.hw_thermal_slowdown": "Not Active"}
+            for i, (t, u) in enumerate(zip(temps, used))]
+    state = {"gpus": gpus, "apps": [{"gpu_uuid": f"GPU-{c}a1b2", "pid": pid, "process_name": name,
+                                     "used_memory": mib} for c, pid, name, mib in apps]}
+    path = Path(env["FAKE_GPUS"])
+    path.with_suffix(".tmp").write_text(json.dumps(state))
+    path.with_suffix(".tmp").replace(path)
+
+
+@pytest.fixture
+def two_cards(tmp_path):
+    """Two RTX 3060s behind a fake nvidia-smi, a fake rig checkout and run root,
+    a `sleep` that takes 0.2 s (the guard's 10 s and the launch's 2 s), and
+    GNU date where the Mac has it as gdate."""
+    bin_ = tmp_path / "bin"
+    bin_.mkdir()
+    smi = bin_ / "nvidia-smi"
+    smi.write_text(f"#!{sys.executable}\n{FAKE_NVIDIA_SMI}")
+    (bin_ / "sleep").write_text(f"#!/bin/sh\nexec {shutil.which('sleep')} 0.2\n")
+    for f in (smi, bin_ / "sleep"):
+        f.chmod(0o755)
+    if subprocess.run(["date", "-d", "@0"], capture_output=True).returncode and shutil.which("gdate"):
+        (bin_ / "date").symlink_to(shutil.which("gdate"))
+    repo, rigdir = tmp_path / "repo", tmp_path / "runs" / ".rig"
+    repo.mkdir()
+    rigdir.mkdir(parents=True)
+    (repo / "config.yaml").write_text("model:\n  d_model: 512   # width of the trunk\n")
+    shutil.copy(REMOTE / "guarded.sh", rigdir / "guarded.sh")
+    env = dict(os.environ, PATH=f"{bin_}:{os.environ['PATH']}", FAKE_GPUS=str(tmp_path / "gpus.json"),
+               RIG_REPO=str(repo), RIG_RUNS=str(tmp_path / "runs"), TZ="UTC")
+    set_cards(env)
+    return env
+
+
+def need_gnu_date(env):
+    if subprocess.run(["date", "-Is"], env=env, capture_output=True).returncode:
+        pytest.skip("no GNU date")
+
+
+def lib(env, code):
+    r = subprocess.run(["bash", "-c", f". {shlex.quote(str(REMOTE / 'lib.sh'))}; {code}"],
+                       env=env, capture_output=True, text=True)
+    return r.returncode, r.stdout + r.stderr
+
+
+def bash(env, script, *args, timeout=30):
+    r = subprocess.run(["bash", str(REMOTE / script), *map(str, args)], env=env,
+                       capture_output=True, text=True, timeout=timeout)
+    return r.returncode, r.stdout + r.stderr
+
+
+def wait_for(path, timeout=15):
+    end = time.time() + timeout
+    while not path.exists() and time.time() < end:
+        time.sleep(0.1)
+    assert path.exists(), path
+
+
+def live_run(env, name, card):
+    """A guarded run dir whose process is alive, launched on card."""
+    d = Path(env["RIG_RUNS"]) / name
+    d.mkdir()
+    p = subprocess.Popen([shutil.which("sleep"), "60"])
+    (d / "pid").write_text(f"{p.pid}\n")
+    (d / "gpu").write_text(f"{card}\n")
+    return d, p
+
+
+def test_fake_nvidia_smi_answers_like_the_rig(two_cards):
+    """The rig's own answer (2026-10-19), so the fake is the shape the scripts parse."""
+    r = subprocess.run(["nvidia-smi", "--query-gpu=name,temperature.gpu,clocks.sm,memory.used,"
+                        "memory.total,power.limit,clocks_event_reasons.sw_thermal_slowdown",
+                        "--format=csv,noheader"], env=two_cards, capture_output=True, text=True)
+    assert r.stdout == ("NVIDIA GeForce RTX 3060, 56, 405 MHz, 9 MiB, 12288 MiB, 100.00 W, Not Active\n"
+                        "NVIDIA GeForce RTX 3060, 50, 405 MHz, 1 MiB, 12288 MiB, 100.00 W, Not Active\n")
+
+
+def test_gpu_free_per_card(two_cards):
+    env = two_cards
+    assert lib(env, "gpu_free 0")[0] == 0 and lib(env, "gpu_free 1")[0] == 0
+    # strata-swift-like load on card 1: card 0 stays free
+    set_cards(env, used=(9, 11600), apps=[(1, 4242, "llama-server", 11590)])
+    rc, out = lib(env, "gpu_free 0")
+    assert rc == 0 and "GPU 0 free: 9 MiB used, 56 C" in out, out
+    rc, out = lib(env, "gpu_free 1")
+    assert rc == 1 and "GPU 1 BUSY: 11600 MiB" in out and "4242, llama-server, 11590" in out, out
+    # the temperature is the card's own
+    set_cards(env, temps=(85, 50))
+    rc, out = lib(env, "gpu_free 0")
+    assert rc == 1 and "GPU 0 HOT: 85 C >= 85 C" in out, out
+    assert lib(env, "gpu_free 1")[0] == 0
+    rc, out = lib(env, "gpu_free 2")
+    assert rc == 1 and "GPU 2 CHECK FAILED" in out, out
+    # a live guarded run holds its card before its model shows up as an app
+    set_cards(env)
+    d, p = live_run(env, "w5-a", 0)
+    try:
+        rc, out = lib(env, "gpu_free 0")
+        assert rc == 1 and f"GPU 0 BUSY: live guarded runs on it:\n  {d}" in out, out
+        assert lib(env, "gpu_free 1")[0] == 0
+    finally:
+        p.kill()
+        p.wait()
+
+
+def test_auto_picks_a_free_card(two_cards):
+    env = two_cards
+    show = 'pick_gpus {} {}; rc=$?; echo "GPUS=${{GPUS[*]}}"; exit $rc'
+    rc, out = lib(env, show.format("auto", ""))
+    assert rc == 0 and "GPUS=0\n" in out, out
+    rc, out = lib(env, show.format("auto", "all"))
+    assert rc == 0 and "GPUS=0 1\n" in out, out
+    set_cards(env, apps=[(0, 4242, "python", 3000)])
+    rc, out = lib(env, show.format("auto", ""))
+    assert rc == 0 and "GPU 0 BUSY" in out and "GPUS=1\n" in out, out
+    rc, out = lib(env, show.format("auto", "all"))
+    assert rc == 0 and "GPUS=1\n" in out, out
+    assert lib(env, show.format("0", ""))[0] == 1
+    rc, out = lib(env, show.format("0,1", "all"))
+    assert rc == 1 and "GPU 0 BUSY" in out, out
+    assert lib(env, show.format("1", ""))[0] == 0
+    set_cards(env, temps=(56, 88), apps=[(0, 4242, "python", 3000)])
+    rc, out = lib(env, show.format("auto", "all"))
+    assert rc == 1 and "NO FREE GPU" in out, out
+
+
+def test_guard_fires_on_its_own_card(two_cards):
+    env = two_cards
+    need_gnu_date(env)
+    w = Path(env["RIG_RUNS"]) / "hot"
+    p = subprocess.Popen(["bash", str(REMOTE / "guarded.sh"), str(w), "1",
+                          shutil.which("sleep"), "60"], env=env)
+    try:
+        wait_for(w / "gpu.csv")
+        time.sleep(1)
+        assert not (w / "end").exists()
+        set_cards(env, temps=(56, 85))
+        p.wait(timeout=15)
+    finally:
+        p.kill()
+    assert (w / "end").read_text().startswith("exit 143")
+    assert "TEMP GUARD: card 1 85C >= 85" in (w / "guard.log").read_text()
+    rows = (w / "gpu.csv").read_text().splitlines()
+    assert rows[0].endswith(",hw_thermal,gpu")
+    assert all(r.split(", ")[1] in ("50", "85") and r.endswith(", 1") for r in rows[1:]), rows
+
+
+def test_guard_ignores_the_other_card(two_cards):
+    """item-1 decision: only the run's own card trips its guard."""
+    env = two_cards
+    need_gnu_date(env)
+    set_cards(env, temps=(60, 95))
+    w = Path(env["RIG_RUNS"]) / "cool"
+    rc, out = bash(env, "guarded.sh", w, 0, shutil.which("sleep"), 1)
+    assert rc == 0, out
+    assert (w / "end").read_text().startswith("exit 0")
+    assert not (w / "guard.log").exists()
+    rows = (w / "gpu.csv").read_text().splitlines()[1:]
+    assert rows and all(r.split(", ")[1] == "60" and r.endswith(", 0") for r in rows), rows
+
+
+def fake_python(env, tmp_path):
+    py = tmp_path / "py"
+    py.write_text('#!/bin/sh\necho "card=$CUDA_VISIBLE_DEVICES order=$CUDA_DEVICE_ORDER '
+                  'dispatch=$MINAGI_DISPATCH args $*"\n')
+    py.chmod(0o755)
+    return dict(env, RIG_PY=str(py))
+
+
+def test_train_launch_pins_the_auto_card(two_cards, tmp_path):
+    env = fake_python(two_cards, tmp_path)
+    need_gnu_date(env)
+    set_cards(env, used=(3009, 1), apps=[(0, 4242, "python", 3000)])
+    w = Path(env["RIG_RUNS"]) / "t"
+    rc, out = bash(env, "train.sh", w, "-", "padded", "auto", "-", "-", "-", "train.py", "read", "d")
+    assert rc == 0, out
+    assert "GPU 0 BUSY" in out and "auto: card 1" in out and f"launched {w} on card 1" in out, out
+    wait_for(w / "end")
+    assert (w / "gpu").read_text() == "1\n"
+    cmd = (w / "cmd").read_text()
+    assert "card 1\n" in cmd and "CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=1 MINAGI_DISPATCH=padded" in cmd
+    assert "card=1 order=PCI_BUS_ID dispatch=padded args train.py read d" in (w / "read.log").read_text()
+    # a named busy card is refused, and nothing is launched
+    rc, out = bash(env, "train.sh", w.with_name("t2"), "-", "padded", "0", "-", "-", "-", "train.py")
+    assert rc == 1 and "GPU 0 BUSY" in out and not w.with_name("t2").exists(), out
+
+
+def test_eval_gen_spreads_shards_over_the_cards(two_cards, tmp_path):
+    env = fake_python(two_cards, tmp_path)
+    need_gnu_date(env)
+    bin_ = Path(env["PATH"].split(":")[0])
+    if subprocess.run(["split", "--version"], capture_output=True).returncode:
+        if not shutil.which("gsplit"):
+            pytest.skip("no GNU split")
+        (bin_ / "split").symlink_to(shutil.which("gsplit"))
+    runs = Path(env["RIG_RUNS"])
+    (runs / "heldout.jsonl").write_text("".join(f'{{"id": {i}}}\n' for i in range(6)))
+    for m in ("A", "B"):
+        (runs / m).mkdir()
+    e = runs / "e"
+    rc, out = bash(env, "eval-gen.sh", e, 3, 800, runs / "heldout.jsonl", "padded", "auto",
+                   f"A={runs / 'A'}", f"B={runs / 'B'}")
+    assert rc == 0 and "auto: card 0 1" in out, out
+    cards = {}
+    for d in sorted(e.glob("gen-*")):
+        wait_for(d / "end")
+        cards[d.name] = d.joinpath("gpu").read_text().strip()
+        assert f"card={cards[d.name]} " in (d / "read.log").read_text()
+    assert cards == {"gen-A-0": "0", "gen-A-1": "1", "gen-A-2": "0",
+                     "gen-B-0": "1", "gen-B-1": "0", "gen-B-2": "1"}
+
+
+def test_gpu_check_two_cards(two_cards):
+    env = two_cards
+    rc, out = bash(env, "gpu-check.sh", "all", 85, 1024)
+    assert rc == 0, out
+    assert "config: reference (d_model: 512)\n" in out, out
+    for c in ("0", "1"):
+        assert f"== card {c}\n" in out and f"GPU {c} free" in out
+    assert "free cards: 0 1" in out
+    assert "0, NVIDIA GeForce RTX 3060, 56, 405 MHz, 9 MiB, 12288 MiB, 100.00 W, Not Active" in out
+    set_cards(env, used=(3009, 1), apps=[(0, 4242, "python", 3000)])
+    d, p = live_run(env, "w5-a", 0)
+    try:
+        rc, out = bash(env, "gpu-check.sh", "all", 85, 1024)
+        assert rc == 0 and "free cards: 1\n" in out, out
+        assert "compute apps:\n  4242, python, 3000 MiB\nGPU 0 BUSY" in out, out
+        assert f"  {d} (card 0)" in out
+        rc, out = bash(env, "gpu-check.sh", 0, 85, 1024)
+        assert rc == 1 and "== card 1" not in out and "free cards: none" in out, out
+        assert bash(env, "gpu-check.sh", 1, 85, 1024)[0] == 0
+        set_cards(env, temps=(56, 90), used=(3009, 1), apps=[(0, 4242, "python", 3000)])
+        rc, out = bash(env, "gpu-check.sh", "all", 85, 1024)
+        assert rc == 1 and "GPU 1 HOT: 90 C" in out and "free cards: none" in out, out
+    finally:
+        p.kill()
+        p.wait()
+
+
+def test_status_shows_the_card_and_both_temps(two_cards):
+    w = Path(two_cards["RIG_RUNS"]) / "t"
+    w.mkdir()
+    (w / "gpu").write_text("1\n")
+    rc, out = bash(two_cards, "status.sh", w)
+    assert "card: 1\n" in out and "now: card 0 56 C, card 1 50 C\n" in out, out
+
+
+def test_side_by_side_runs_share_the_active_config(two_cards):
+    env = two_cards
+    rigdir = Path(env["RIG_RUNS"]) / ".rig"
+    repo = Path(env["RIG_REPO"])
+    (repo / "config.small.yaml").write_text("d_model: 384\n")
+    shutil.copy(repo / "config.yaml", rigdir / "config.reference.yaml")
+    (rigdir / "active-config").write_text("reference\n")
+    a, pa = live_run(env, "w5-a", 0)
+    b, pb = live_run(env, "w5-b", 1)
+    try:
+        rc, out = bash(env, "config.sh", "small")
+        assert rc == 3 and f"  {a}\n" in out and f"  {b}\n" in out, out
+        assert "a second run side by side on the other" in out
+        assert "card must use the active config, reference)" in out
+        assert bash(env, "config.sh", "reference")[0] == 0
+    finally:
+        for p in (pa, pb):
+            p.kill()
+            p.wait()
+
+
+def test_gpu_flags_dry_run(capsys):
+    rc, out = dry(capsys, "smoke", "--gpu", "1", "--no-wait")
+    assert rc == 0 and f"smoke.sh {RUNS}/w5-smoke small padded 1 15 " in commands(out)[-1]
+    assert "CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=$card" in out
+    assert 'echo "$card" > "$w/gpu"' in out and 'nvidia-smi -i "$CARD"' in out
+    rc, out = dry(capsys, "train", "--name", "t", "--data", "d", "--held-out", "v",
+                  "--minutes", "5", "--gpu", "0")
+    assert f"train.sh {RUNS}/t - padded 0 - - - train.py" in commands(out)[-1]
+    assert "CUDA_VISIBLE_DEVICES=$card" in out
+    rc, out = dry(capsys, "eval", "gen", "--name", "e", "--model", "A=x", "--gpu", "0,1")
+    assert f"heldout.jsonl padded 0,1 A={RUNS}/x" in commands(out)[-1]
+    assert "CUDA_VISIBLE_DEVICES=$card" in out and 'pick_gpus "$GPU" all' in out
+    for bad in (["smoke", "--gpu", "0,1"], ["smoke", "--gpu", "x"],
+                ["eval", "gen", "--name", "e", "--model", "A=x", "--gpu", "0,0"],
+                ["eval", "gen", "--name", "e", "--model", "A=x", "--gpu", "0,"],
+                ["gpu-check", "--gpu", "auto"]):
+        with pytest.raises(SystemExit):
+            rig.main(["--dry-run", *bad])

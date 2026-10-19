@@ -1,19 +1,21 @@
 #!/usr/bin/env python3
 """
-rig.py - drive training on the Dell rig (RTX 3060) from the Mac.
+rig.py - drive training on the Dell rig (two RTX 3060s) from the Mac.
 
     python3 tools/rig/rig.py [--host H] [--dry-run] <subcommand> ...
 
-    gpu-check [--max-temp 85] [--max-used-mib 1024]
+    gpu-check [--gpu N] [--max-temp 85] [--max-used-mib 1024]
     swift stop|start|status [--wait]
     sync [--config small|reference] [--test]
-    smoke [--name w5-smoke] [--config small] [--dispatch padded|exact] [--minutes 15] [--no-wait]
+    smoke [--name w5-smoke] [--config small] [--dispatch padded|exact] [--gpu N|auto]
+          [--minutes 15] [--no-wait]
     train --name N --data DIR --held-out DIR [--mix persona=0.5,chat=0.5]
           [--config small|reference] [--from-weights DIR] [--lr X] [--lr-reset]
           [--minutes M] [--max-chars N] [--sample-every K] [--dispatch padded|exact]
-          [--newborn-lr | --no-newborn-lr] [--newborn-half N]
+          [--newborn-lr | --no-newborn-lr] [--newborn-half N] [--gpu N|auto]
     status N [--watch SEC]
     eval gen --name E --model NAME=WEIGHTS [--model ...] [--shards 3] [--max-chars 800]
+             [--gpu N,M|auto]
     eval status --name E
     eval score --name E [--no-judge]
     fetch N [--dest runs/N]
@@ -26,9 +28,19 @@ Stdlib only, so the system python3 runs it.
 
 Run dirs are $RUNS/<name> and hold what guarded.sh writes (read.log, gpu.csv,
 pid, start, end, guard.log) plus samples.txt, expert_rates.jsonl, weights/,
-cmd (the exact command) and config.yaml (the config it ran with).
+gpu (the card), cmd (the exact command) and config.yaml (the config it ran
+with).
 
 Decisions on the points the spec left open:
+- Two cards, one run per card (owner decision; train.py has one --device and
+  no multi-GPU code). --gpu N pins a job to nvidia-smi's card N:
+  CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=N, so the job's cuda:0 is
+  that card. auto (the default) is the first free card, picked on the rig;
+  eval gen takes a comma list and spreads its jobs round-robin, auto being
+  every free card. The free check, the 85 C guard and gpu.csv are per card;
+  the guard fires on the run's own card only (the other card has its own
+  run and guard). A live guarded run holds its card even before its model
+  is loaded.
 - Dispatch. MINAGI_DISPATCH=padded for every GPU job (smoke, train, eval
   gen); --dispatch exact opts out and sets MINAGI_DISPATCH=exact explicitly,
   so `cmd` always says which.
@@ -60,7 +72,8 @@ Decisions on the points the spec left open:
   the recorded active config ($RUNS/.rig/active-config). config.yaml is never
   changed while ANY guarded run is live, whatever keys differ (the simple
   rule): the select refuses and says which runs. train without --config keeps
-  whatever is active.
+  whatever is active. Both cards run from the one checkout, so a run side by
+  side with a live one uses the active config.
 - Uploads go by rsync, not scp: rsync replaces a file by rename, so a
   guarded.sh that bash is still reading for a live run is not rewritten under
   it. swift runs as the admin user, who cannot see train's upload dir, so its
@@ -94,7 +107,7 @@ SYNC_EXCLUDES = [".venv", "data", "data_*", "runs", ".git", ".claude",
                  "/config.yaml"]
 
 FETCH_FILES = ["read.log", "samples.txt", "expert_rates.jsonl", "gpu.csv",
-               "cmd", "config.yaml", "guard.log", "start", "end",
+               "gpu", "cmd", "config.yaml", "guard.log", "start", "end",
                "device_check.log"]
 
 HARNESS = "/Volumes/stor/code/off/qwen/harness"
@@ -239,6 +252,21 @@ def model_spec(s):
     return name, wd
 
 
+def gpu_card(s):
+    """--gpu for one job: a card index, or auto."""
+    if s != "auto" and not s.isdigit():
+        raise argparse.ArgumentTypeError(f"--gpu wants a card index (0, 1) or auto, got {s!r}")
+    return s
+
+
+def gpu_cards(s):
+    """eval gen's --gpu: a comma list of card indexes, or auto."""
+    cards = s.split(",")
+    if s != "auto" and (not all(c.isdigit() for c in cards) or len(set(cards)) < len(cards)):
+        raise argparse.ArgumentTypeError(f"--gpu wants card indexes (0,1) or auto, got {s!r}")
+    return s
+
+
 def first_error(*codes):
     return next((c for c in codes if c), 0)
 
@@ -246,7 +274,8 @@ def first_error(*codes):
 # ---- subcommands
 
 def cmd_gpu_check(rig, a):
-    return rig.script("gpu-check.sh", a.max_temp, a.max_used_mib)
+    return rig.script("gpu-check.sh", "all" if a.gpu is None else a.gpu,
+                      a.max_temp, a.max_used_mib)
 
 
 def poll_swift(rig, timeout):
@@ -300,7 +329,7 @@ def cmd_smoke(rig, a):
     w = f"{rig.runs}/{a.name}"
     data = under(rig.runs, a.data) if a.data else f"{rig.runs}/w4-lanes/chat-train"
     held = under(rig.runs, a.held_out) if a.held_out else f"{rig.runs}/w4-lanes/chat-val"
-    rc = rig.script("smoke.sh", w, a.config, a.dispatch, a.minutes, data, held)
+    rc = rig.script("smoke.sh", w, a.config, a.dispatch, a.gpu, a.minutes, data, held)
     if rc or a.no_wait:
         return rc
     print(f"waiting for {a.name} to end (about {a.minutes} min plus startup)...")
@@ -334,7 +363,7 @@ def cmd_train(rig, a):
         print("train: give --minutes or --max-chars (an unattended run is bounded)")
         return 2
     w = f"{rig.runs}/{a.name}"
-    rc = rig.script("train.sh", w, a.config or "-", a.dispatch,
+    rc = rig.script("train.sh", w, a.config or "-", a.dispatch, a.gpu,
                     under(rig.runs, a.from_weights) if a.from_weights else "-",
                     a.data if a.mix else "-", a.mix or "-",
                     *train_args(rig, a))
@@ -362,7 +391,7 @@ def cmd_eval(rig, a):
     if a.what == "gen":
         models = [f"{n}={under(rig.runs, wd)}" for n, wd in a.model]
         return rig.script("eval-gen.sh", e, a.shards, a.max_chars,
-                          under(rig.runs, a.prompts), a.dispatch, *models)
+                          under(rig.runs, a.prompts), a.dispatch, a.gpu, *models)
     if a.what == "status":
         return rig.script("eval-status.sh", e)
     return eval_score(rig, a, e)
@@ -446,7 +475,9 @@ def parser():
                    help="print every rsync/scp/ssh command and the remote scripts; run nothing")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    s = sub.add_parser("gpu-check", help="who holds the card; exit 1 unless it is free")
+    s = sub.add_parser("gpu-check",
+                       help="per card: who holds it; exit 1 unless a card (or the one named) is free")
+    s.add_argument("--gpu", type=int, metavar="N", help="check card N only (default: every card)")
     s.add_argument("--max-temp", type=int, default=85)
     s.add_argument("--max-used-mib", type=int, default=1024)
     s.set_defaults(fn=cmd_gpu_check)
@@ -468,10 +499,15 @@ def parser():
         s.add_argument("--dispatch", choices=["padded", "exact"], default="padded",
                        help="MINAGI_DISPATCH (default padded, owner decision)")
 
+    def gpu(s):
+        s.add_argument("--gpu", type=gpu_card, default="auto", metavar="N|auto",
+                       help="the card to run on (default auto: the first free one)")
+
     s = sub.add_parser("smoke", help="device_check + a short guarded read: the thermal/speed gate")
     s.add_argument("--name", type=run_name, default="w5-smoke")
     s.add_argument("--config", choices=["small", "reference"], default="small")
     dispatch(s)
+    gpu(s)
     s.add_argument("--minutes", type=number, default="15")
     s.add_argument("--data", help="default $RUNS/w4-lanes/chat-train (relative: to --runs)")
     s.add_argument("--held-out", help="default $RUNS/w4-lanes/chat-val (relative: to --runs)")
@@ -495,6 +531,7 @@ def parser():
                    help="stop after this many characters (budget by characters)")
     s.add_argument("--sample-every", type=number, default="10")
     dispatch(s)
+    gpu(s)
     g = s.add_mutually_exclusive_group()
     g.add_argument("--newborn-lr", dest="newborn_lr", action="store_true", default=None)
     g.add_argument("--no-newborn-lr", dest="newborn_lr", action="store_false")
@@ -516,6 +553,8 @@ def parser():
     e.add_argument("--max-chars", type=int, default=800)
     e.add_argument("--prompts", default="heldout.jsonl", help="relative: to --runs")
     dispatch(e)
+    e.add_argument("--gpu", type=gpu_cards, default="auto", metavar="N,M|auto",
+                   help="the cards, jobs round-robin over them (default auto: every free one)")
     e = ev.add_parser("status", help="lines per shard, replies per file, guard hits")
     e.add_argument("--name", type=run_name, required=True)
     e = ev.add_parser("score", help="fetch replies, concatenate shards, persona_score.py")

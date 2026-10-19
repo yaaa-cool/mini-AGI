@@ -1,12 +1,13 @@
 #!/bin/bash
-# train.sh <run_dir> <config|-> <dispatch> <from_weights|-> <mix_src|-> <mix_spec|-> <train.py args...>
-# One guarded `train.py read` in a fresh run dir: GPU-free check, config
-# select, a fresh cp -a of the starting weights, the replay mix folder, then
-# the launch. rig.py builds the train.py arguments; this only runs them.
+# train.sh <run_dir> <config|-> <dispatch> <card|auto> <from_weights|-> <mix_src|-> <mix_spec|-> <train.py args...>
+# One guarded `train.py read` on one card in a fresh run dir: GPU-free check
+# (picks the card for auto), config select, a fresh cp -a of the starting
+# weights, the replay mix folder, then the launch. rig.py builds the train.py
+# arguments; this only runs them.
 # shellcheck source-path=SCRIPTDIR source=lib.sh
 . "$(dirname "$0")/lib.sh"
-W=$1; CONFIG=$2; DISPATCH=$3; FROM=$4; MIX_SRC=$5; MIX=$6
-shift 6
+W=$1; CONFIG=$2; DISPATCH=$3; GPU=$4; FROM=$5; MIX_SRC=$6; MIX=$7
+shift 7
 
 # build_mix OUT SRC LANE:N... : the replay folder, as replay.sh/replay2.sh did.
 # read gives every top-level folder an equal share, so a lane with N shares
@@ -46,7 +47,7 @@ build_mix() {
   du -sbL "$out"/* | awk '{printf "  mix %s %.1fM\n", $2, $1/1e6}'
 }
 
-gpu_free || exit 1
+pick_gpus "$GPU" || exit 1
 fresh_dir "$W" || exit 1
 if [ "$FROM" != - ] && [ ! -d "$FROM" ]; then
   echo "no weights at $FROM"; exit 1
@@ -64,4 +65,4 @@ if [ "$MIX" != - ]; then
   build_mix "$W/mix" "$MIX_SRC" "${LANES[@]}" || exit 1
 fi
 export MINAGI_DISPATCH=$DISPATCH
-launch_guarded "$W" "$PY" "$@"
+launch_guarded "$W" "${GPUS[0]}" "$PY" "$@"
